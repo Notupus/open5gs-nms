@@ -779,6 +779,7 @@ exten => _X.,1,NoOp(PSTN Gateway: unmatched digits \${EXTEN} - checking external
  same => n,GotoIf($["\${OUT_CALLERID}" = ""]?no_caller_id)
  same => n(dial),Set(CALLERID(num)=\${OUT_CALLERID})
  same => n,Set(CDR(accountcode)=external-did)
+ same => n,Progress()
  same => n,Dial(PJSIP/\${EXTEN}@external_trunk,60)
  same => n,Hangup()
  same => n(no_caller_id),NoOp(Caller \${CALLER_IMSI} has no outbound caller ID or MSISDN on file - rejecting outbound external call)
