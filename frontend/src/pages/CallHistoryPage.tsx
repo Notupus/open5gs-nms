@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
-import { History, RefreshCw, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Phone, Info, Settings2, Power } from 'lucide-react';
+import { History, RefreshCw, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Phone, Info, Settings2, Power, MessageSquare } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
 import { cdrApi, type CdrRecord } from '../api';
 import { imsApi, type ImsStatus } from '../api/ims';
 import { TimeRangePicker, type TimeRangeValue } from '../components/common/TimeRangePicker';
 import { activateOnKey } from '../hooks/useKeyboardA11y';
+import { SmsInspectorView } from '../components/sms/SmsInspectorView';
 
 const DEFAULT_TIME_RANGE: TimeRangeValue = { type: 'relative', ms: 24 * 60 * 60 * 1000, label: 'Last 24 hours' };
 const PAGE_SIZE = 50;
@@ -153,6 +154,7 @@ function KamailioAccCard({ imsStatus, onChanged }: { imsStatus: ImsStatus | null
 }
 
 export function CallHistoryPage() {
+  const [viewMode, setViewMode] = useState<'calls' | 'sms'>('calls');
   const [timeRange, setTimeRange] = useState<TimeRangeValue>(DEFAULT_TIME_RANGE);
   const [sourceSystem, setSourceSystem] = useState<string>('');
   const [imsi, setImsi] = useState('');
@@ -245,15 +247,47 @@ export function CallHistoryPage() {
             Unified call detail records across PSTN, 2G, and 4G/5G IMS.
           </p>
         </div>
-        <div className="flex items-center gap-2 flex-wrap shrink-0">
-          <button onClick={() => setSettingsOpen(o => !o)} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
-            <Settings2 className="w-3.5 h-3.5" /> Settings
+        {viewMode === 'calls' && (
+          <div className="flex items-center gap-2 flex-wrap shrink-0">
+            <button onClick={() => setSettingsOpen(o => !o)} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+              <Settings2 className="w-3.5 h-3.5" /> Settings
+            </button>
+            <button onClick={handleSyncNow} disabled={syncing} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+              <RefreshCw className={clsx('w-3 h-3', syncing && 'animate-spin')} /> Sync Now
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="flex justify-center">
+        <div className="flex gap-1 p-1 bg-nms-surface-2 rounded-lg border border-nms-border">
+          <button
+            onClick={() => setViewMode('calls')}
+            className={clsx(
+              'flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
+              viewMode === 'calls' ? 'bg-nms-accent text-nms-accent-fg shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface'
+            )}
+          >
+            <Phone className="w-4 h-4" />
+            Voice Calls (CDR)
           </button>
-          <button onClick={handleSyncNow} disabled={syncing} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
-            <RefreshCw className={clsx('w-3 h-3', syncing && 'animate-spin')} /> Sync Now
+          <button
+            onClick={() => setViewMode('sms')}
+            className={clsx(
+              'flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
+              viewMode === 'sms' ? 'bg-nms-accent text-nms-accent-fg shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface'
+            )}
+          >
+            <MessageSquare className="w-4 h-4" />
+            SMS Messages (CDR & Inspector)
           </button>
         </div>
       </div>
+
+      {viewMode === 'sms' ? (
+        <SmsInspectorView />
+      ) : (
+        <>
 
       {settingsOpen && (
         <div className="nms-card space-y-3">
@@ -352,6 +386,8 @@ export function CallHistoryPage() {
           </div>
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 }

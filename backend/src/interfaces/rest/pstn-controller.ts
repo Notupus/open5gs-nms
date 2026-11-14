@@ -384,6 +384,7 @@ allow=gsm
 aors=asterisk2g_trunk
 transport=transport-trunk
 direct_media=no
+dtmf_mode=auto
 trust_id_inbound=yes
 asymmetric_rtp_codec=yes
 codec_prefs_outgoing_offer=prefer:pending,operation:intersect,keep:all,transcode:allow
@@ -431,6 +432,7 @@ allow=alaw
 aors=external_trunk
 transport=transport-external
 direct_media=no
+dtmf_mode=auto
 trust_id_inbound=yes
 asymmetric_rtp_codec=yes
 rtp_symmetric=yes
@@ -482,6 +484,7 @@ allow=alaw
 aors=scscf_trunk
 transport=transport-trunk
 direct_media=no
+dtmf_mode=auto
 trust_id_inbound=yes
 ; Real bug found live (2026-08-15): confirmed via raw packet capture that a
 ; PSTN Gateway call's two independent dialogs (caller<->Asterisk, Asterisk

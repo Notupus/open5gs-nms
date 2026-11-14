@@ -153,6 +153,7 @@ import { createBindRouter } from './interfaces/rest/bind-controller';
 import { createValidationRouter } from './interfaces/rest/validation-controller';
 import { createVolteValidationRouter } from './interfaces/rest/volte-validation-controller';
 import { ImsTestNumberManager, createImsTestNumberRouter } from './interfaces/rest/ims-test-number-controller';
+import { ImsSipTrunkManager, createImsSipTrunkRouter } from './interfaces/rest/ims-sip-trunk-controller';
 import { createVowifiValidationRouter } from './interfaces/rest/vowifi-validation-controller';
 import { createQciValidationRouter } from './interfaces/rest/qci-validation-controller';
 import * as http from 'http';
@@ -852,6 +853,9 @@ async function main() {
   const imsTestNumberManager = new ImsTestNumberManager(logger);
   app.use('/api/validation/ims-test-numbers', createImsTestNumberRouter(imsTestNumberManager, auditLogger));
   await imsTestNumberManager.reconcile().catch((err) => logger.warn({ err: String(err) }, 'ims-test-number: reconcile failed at startup'));
+  const imsSipTrunkManager = new ImsSipTrunkManager(logger);
+  app.use('/api/ims/trunks', createImsSipTrunkRouter(imsSipTrunkManager, auditLogger));
+  await imsSipTrunkManager.reconcile().catch((err) => logger.warn({ err: String(err) }, 'ims-sip-trunk: reconcile failed at startup'));
   app.use('/api/validation/qci-hw-test', createQciHwTestRouter(getInterfaceStatusForBlock, imsTestNumberManager, auditLogger, logger));
   app.use('/api/validation/vowifi', createVowifiValidationRouter(subscriberRepo, logger, auditLogger));
   app.use('/api/validation/qci', createQciValidationRouter(subscriberRepo, logger, auditLogger));
@@ -1017,6 +1021,7 @@ async function main() {
     ocsStatsMonitor.stop();
     asteriskStatsMonitor.stop();
     cdrMetricsMonitor.stop();
+    await imsSipTrunkManager.stopAll();
     await imsTestNumberManager.stopAll();
     await subscriberRepo.disconnect();
     await rfPlanningProjectRepo.disconnect();

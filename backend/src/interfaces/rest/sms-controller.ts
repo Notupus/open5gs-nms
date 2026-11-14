@@ -4,6 +4,7 @@ import { promisify } from 'util';
 import * as fs from 'fs';
 import pino from 'pino';
 import * as yaml from 'js-yaml';
+import mysql from 'mysql2/promise';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import { requireAdmin } from './middleware/auth-middleware';
@@ -25,6 +26,25 @@ const nsenter = async (cmd: string, args: string[] = [], timeoutMs = 15000): Pro
 
 const HOST_MME_YAML    = '/proc/1/root/etc/open5gs/mme.yaml';
 const HOST_OSMOCOM_DIR = '/proc/1/root/etc/osmocom';
+const HOST_CALL_STATS_FILE = '/proc/1/root/etc/open5gs/.ims-call-stats.json';
+const DIRECT_CALL_STATS_FILE = '/etc/open5gs/.ims-call-stats.json';
+
+const SMSC_DB_CONFIG = {
+  host: '127.0.0.1',
+  port: 3306,
+  user: 'smsc',
+  password: 'heslo',
+  database: 'smsc',
+  dateStrings: true as const,
+};
+
+let smscDbPool: mysql.Pool | null = null;
+function getSmscDbPool(): mysql.Pool {
+  if (!smscDbPool) {
+    smscDbPool = mysql.createPool({ ...SMSC_DB_CONFIG, connectionLimit: 2 });
+  }
+  return smscDbPool;
+}
 
 interface SmsConfigFile {
   path: string; label: string; group: string; language: string;
@@ -1380,6 +1400,112 @@ export function createSmsRouter(
     }
     await auditLogger.log({ action: 'sms_config_restart', user, details: services.join(', '), success: true });
     res.json({ success: true, results });
+  });
+
+  // GET /api/sms/inspector — returns SMS CDR history, active in-flight queue, and cumulative SIP MESSAGE stats
+  router.get('/inspector', async (_req: Request, res: Response) => {
+    try {
+      const pool = getSmscDbPool();
+      let records: any[] = [];
+      let queue: any[] = [];
+      try {
+        const [r] = await pool.query('SELECT id, created_at, direction, sender, recipient, dcs, text, status FROM sms_cdr ORDER BY id DESC LIMIT 100');
+        records = r as any[];
+      } catch (err: any) {
+        if (err && (err.code === 'ER_NO_SUCH_TABLE' || err.errno === 1146)) {
+          await pool.query(`
+            CREATE TABLE IF NOT EXISTS sms_cdr (
+              id INT(10) UNSIGNED NOT NULL AUTO_INCREMENT,
+              created_at DATETIME NOT NULL,
+              direction VARCHAR(8) NOT NULL,
+              sender VARCHAR(64) NOT NULL,
+              recipient VARCHAR(64) NOT NULL,
+              dcs INT(11) DEFAULT 0,
+              text TEXT,
+              status VARCHAR(20) NOT NULL,
+              PRIMARY KEY (id),
+              KEY idx_sender (sender),
+              KEY idx_recipient (recipient),
+              KEY idx_created (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+          `);
+        }
+      }
+
+      try {
+        const [q] = await pool.query('SELECT id, caller, callee, text, dcs, valid FROM messages ORDER BY id DESC LIMIT 50');
+        queue = q as any[];
+      } catch {
+        queue = [];
+      }
+
+      let cumulativeSmsTotal = 0;
+      let processLifetimeSmsTotal = 0;
+      for (const p of [HOST_CALL_STATS_FILE, DIRECT_CALL_STATS_FILE]) {
+        try {
+          if (fs.existsSync(p)) {
+            const data = JSON.parse(fs.readFileSync(p, 'utf-8'));
+            if (typeof data.cumulativeSmsTotal === 'number') {
+              cumulativeSmsTotal = data.cumulativeSmsTotal;
+            }
+            if (typeof data.processLifetimeSmsTotal === 'number') {
+              processLifetimeSmsTotal = data.processLifetimeSmsTotal;
+            }
+            break;
+          }
+        } catch { /* ignore */ }
+      }
+
+      res.json({
+        success: true,
+        records,
+        queue,
+        stats: {
+          cumulativeSmsTotal,
+          processLifetimeSmsTotal,
+          queueDepth: queue.length,
+          totalCdr: records.length,
+        },
+      });
+    } catch (err) {
+      logger.error({ err: String(err) }, 'sms inspector error');
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // POST /api/sms/inspector/reset-counter — resets cumulative 199 SMS counter
+  router.post('/inspector/reset-counter', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    try {
+      for (const p of [HOST_CALL_STATS_FILE, DIRECT_CALL_STATS_FILE]) {
+        try {
+          if (fs.existsSync(p)) {
+            const data = JSON.parse(fs.readFileSync(p, 'utf-8'));
+            data.cumulativeSmsTotal = 0;
+            fs.writeFileSync(p, JSON.stringify(data, null, 2), 'utf-8');
+          }
+        } catch { /* ignore */ }
+      }
+      await auditLogger.log({ action: 'sms_inspector_reset_counter', user, details: 'reset cumulativeSmsTotal to 0', success: true });
+      res.json({ success: true, message: 'SMS counter reset to 0' });
+    } catch (err) {
+      logger.error({ err: String(err) }, 'sms reset counter error');
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // POST /api/sms/inspector/clear-queue — deletes stuck rows in smsc.messages
+  router.post('/inspector/clear-queue', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    try {
+      const pool = getSmscDbPool();
+      await pool.query('DELETE FROM messages');
+      await auditLogger.log({ action: 'sms_inspector_clear_queue', user, details: 'purged in-flight messages queue', success: true });
+      res.json({ success: true, message: 'In-flight messages queue cleared' });
+    } catch (err) {
+      logger.error({ err: String(err) }, 'sms clear queue error');
+      res.status(500).json({ success: false, error: String(err) });
+    }
   });
 
   return router;

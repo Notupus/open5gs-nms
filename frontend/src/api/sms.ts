@@ -24,6 +24,38 @@ export interface SmsConfigFile {
   restartServices: string[]; exists: boolean;
 }
 
+export interface SmsCdrRecord {
+  id: number;
+  created_at: string;
+  direction: 'MO' | 'MT' | string;
+  sender: string;
+  recipient: string;
+  dcs: number;
+  text: string;
+  status: 'DELIVERED' | 'QUEUED' | 'FAILED' | string;
+}
+
+export interface SmsQueueItem {
+  id: number;
+  caller: string;
+  callee: string;
+  text: string;
+  dcs: number;
+  valid: string;
+}
+
+export interface SmsInspectorData {
+  success: boolean;
+  records: SmsCdrRecord[];
+  queue: SmsQueueItem[];
+  stats: {
+    cumulativeSmsTotal: number;
+    processLifetimeSmsTotal: number;
+    queueDepth: number;
+    totalCdr: number;
+  };
+}
+
 export const smsApi = {
   getStatus:       async (): Promise<SmsStatus> => { const { data } = await api.get('/status'); return data; },
   configure:       async (input: SmsConfigureInput) => { const { data } = await api.post('/configure', input); return data; },
@@ -47,5 +79,14 @@ export const smsApi = {
   },
   restartServices:   async (services: string[]): Promise<{ success: boolean; results: string[] }> => {
     const { data } = await api.post('/configs/restart', { services }); return data;
+  },
+  getInspector: async (): Promise<SmsInspectorData> => {
+    const { data } = await api.get('/inspector'); return data;
+  },
+  resetCounter: async (): Promise<{ success: boolean; message?: string; error?: string }> => {
+    const { data } = await api.post('/inspector/reset-counter'); return data;
+  },
+  clearQueue: async (): Promise<{ success: boolean; message?: string; error?: string }> => {
+    const { data } = await api.post('/inspector/clear-queue'); return data;
   },
 };

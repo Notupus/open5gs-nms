@@ -106,6 +106,44 @@ export interface ImsCallStats {
   sampledAt: number;
 }
 
+export interface ImsSipTrunkStatus {
+  id: string;
+  name: string;
+  remoteHost: string;
+  remotePort: number;
+  username: string;
+  localPubIp: string;
+  localPubPort: number;
+  imsBindIp: string;
+  imsPort: number;
+  sendRpid: boolean;
+  sendPai: boolean;
+  codecs: string[];
+  enabled: boolean;
+  registered: boolean;
+  lastRegisterStatus?: string;
+  lastRegisterAt?: string;
+  activeCalls: number;
+  callsHandled: number;
+  createdAt: string;
+}
+
+export interface ImsSipTrunkInput {
+  id?: string;
+  name?: string;
+  remoteHost: string;
+  remotePort?: number;
+  username: string;
+  password?: string;
+  localPubIp?: string;
+  localPubPort?: number;
+  imsPort?: number;
+  sendRpid?: boolean;
+  sendPai?: boolean;
+  codecs?: string[];
+  enabled?: boolean;
+}
+
 export const imsApi = {
   getStatus:       async (): Promise<ImsStatus>         => { const { data } = await api.get('/status');            return data; },
   getLive:         async (): Promise<ImsLiveStatus>     => { const { data } = await api.get('/live');              return data; },
@@ -141,6 +179,22 @@ export const imsApi = {
   },
   restartServices:   async (services: string[]): Promise<{ success: boolean; results: string[] }> => {
     const { data } = await api.post('/configs/restart', { services });
+    return data;
+  },
+  listTrunks: async (): Promise<{ success: boolean; trunks: ImsSipTrunkStatus[] }> => {
+    const { data } = await api.get('/trunks');
+    return data;
+  },
+  upsertTrunk: async (input: ImsSipTrunkInput): Promise<{ success: boolean; trunk: ImsSipTrunkStatus }> => {
+    const { data } = await api.post('/trunks', input);
+    return data;
+  },
+  reregisterTrunk: async (id: string): Promise<{ success: boolean; trunk: ImsSipTrunkStatus }> => {
+    const { data } = await api.post(`/trunks/${encodeURIComponent(id)}/reregister`);
+    return data;
+  },
+  deleteTrunk: async (id: string): Promise<{ success: boolean }> => {
+    const { data } = await api.delete(`/trunks/${encodeURIComponent(id)}`);
     return data;
   },
 };

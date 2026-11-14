@@ -11,7 +11,7 @@ import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
 import { imsApi, ImsConfigureInput } from '../api/ims';
 import { ipPlanApi } from '../api/ip-plan';
-import type { ImsStatus, ValidationCheck, ImsConfigFile, ImsLiveStatus, RegisteredUserInfo } from '../api/ims';
+import type { ImsStatus, ValidationCheck, ImsConfigFile, ImsLiveStatus, RegisteredUserInfo, ImsSipTrunkStatus } from '../api/ims';
 import { useEscapeKey } from '../hooks/useKeyboardA11y';
 
 // ── Shared sub-components ─────────────────────────────────────────────────────
@@ -933,6 +933,507 @@ function ConfigEditorTab() {
   );
 }
 
+// ── PSTN / SIP Trunks Card ────────────────────────────────────────────────────
+
+function PstnTrunksCard({
+  trunks,
+  onChanged,
+  onConfigure,
+  compact = false,
+}: {
+  trunks: ImsSipTrunkStatus[];
+  onChanged: () => void;
+  onConfigure?: (trunkId?: string) => void;
+  compact?: boolean;
+}) {
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const registeredCount = trunks.filter((t) => t.enabled && t.registered).length;
+  const totalActiveCalls = trunks.reduce((sum, t) => sum + (t.activeCalls || 0), 0);
+
+  const handleReregister = async (id: string) => {
+    setBusyId(id);
+    try {
+      const res = await imsApi.reregisterTrunk(id);
+      toast.success(`SIP trunk ${id}: ${res.trunk.lastRegisterStatus ?? (res.trunk.registered ? 'Registered' : 'REGISTER sent')}`);
+      onChanged();
+    } catch (err: any) {
+      toast.error(err.response?.data?.error ?? String(err));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!window.confirm(`Delete PSTN SIP trunk "${id}"? Active calls on this trunk will be disconnected.`)) return;
+    setBusyId(id);
+    try {
+      await imsApi.deleteTrunk(id);
+      toast.success(`Removed SIP trunk ${id}`);
+      onChanged();
+    } catch (err: any) {
+      toast.error(err.response?.data?.error ?? String(err));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="nms-card">
+      <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
+        <div className="flex items-center gap-2">
+          <Phone className="w-4 h-4 text-nms-accent" />
+          <span className="text-sm font-semibold text-nms-text">PSTN / External SIP Trunks</span>
+          {trunks.length > 0 ? (
+            <span className={`text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full border ${
+              registeredCount === trunks.length
+                ? 'text-green-400 bg-green-500/10 border-green-500/30'
+                : registeredCount > 0
+                  ? 'text-amber-400 bg-amber-500/10 border-amber-500/30'
+                  : 'text-red-400 bg-red-500/10 border-red-500/30'
+            }`}>
+              {registeredCount}/{trunks.length} Registered
+            </span>
+          ) : (
+            <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full border text-nms-text-dim bg-nms-surface-2 border-nms-border">
+              Not Configured
+            </span>
+          )}
+          {totalActiveCalls > 0 && (
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full border text-green-400 bg-green-500/10 border-green-500/30">
+              {totalActiveCalls} active call{totalActiveCalls === 1 ? '' : 's'}
+            </span>
+          )}
+        </div>
+        {!compact && onConfigure && (
+          <button
+            onClick={() => onConfigure(undefined)}
+            className="nms-btn-ghost text-xs flex items-center gap-1"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Configure / Add Trunk
+          </button>
+        )}
+      </div>
+
+      {trunks.length === 0 ? (
+        <p className="text-xs text-nms-text-dim">
+          No external SIP / PSTN trunks configured. Click Configure / Add Trunk to bridge VoLTE calls to an external FreePBX / Asterisk / SIP provider.
+        </p>
+      ) : (
+        <div className="space-y-2.5">
+          {trunks.map((t) => {
+            const isBusy = busyId === t.id;
+            return (
+              <div
+                key={t.id}
+                className="rounded-lg border border-nms-border bg-nms-surface-2/60 p-3 flex flex-col gap-2"
+              >
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span
+                      className={`w-2 h-2 rounded-full shrink-0 ${
+                        !t.enabled ? 'bg-nms-text-dim/40' : t.registered ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.7)]' : 'bg-red-500'
+                      }`}
+                    />
+                    <span className="text-xs font-semibold text-nms-text">{t.name}</span>
+                    <span className="text-[11px] font-mono text-nms-text-dim">({t.username}@{t.remoteHost}:{t.remotePort})</span>
+                    <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${
+                      !t.enabled
+                        ? 'text-nms-text-dim bg-nms-surface-2 border-nms-border'
+                        : t.registered
+                          ? 'text-green-400 bg-green-500/10 border-green-500/30'
+                          : 'text-red-400 bg-red-500/10 border-red-500/30'
+                    }`}>
+                      {!t.enabled ? 'Disabled' : t.registered ? 'Registered' : 'Unregistered'}
+                      {t.enabled && t.lastRegisterStatus ? ` • ${t.lastRegisterStatus}` : ''}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => handleReregister(t.id)}
+                      disabled={isBusy || !t.enabled}
+                      className="nms-btn-ghost text-xs flex items-center gap-1 px-2 py-1 disabled:opacity-40"
+                      title="Send SIP REGISTER now"
+                    >
+                      <RefreshCw className={clsx('w-3 h-3', isBusy && 'animate-spin')} />
+                      Re-register
+                    </button>
+                    {!compact && onConfigure && (
+                      <button
+                        onClick={() => onConfigure(t.id)}
+                        disabled={isBusy}
+                        className="nms-btn-ghost text-xs flex items-center gap-1 px-2 py-1"
+                        title="Edit trunk configuration"
+                      >
+                        <Pencil className="w-3 h-3" />
+                        Edit
+                      </button>
+                    )}
+                    {!compact && (
+                      <button
+                        onClick={() => handleDelete(t.id)}
+                        disabled={isBusy}
+                        className="nms-btn-ghost text-xs text-red-400 hover:text-red-300 px-2 py-1"
+                        title="Delete trunk"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-nms-text-dim font-mono">
+                  <span>PBX Link: {t.localPubIp}:{t.localPubPort} ↔ {t.remoteHost}:{t.remotePort}</span>
+                  <span>IMS Leg: {t.imsBindIp}:{t.imsPort}</span>
+                  <span>Calls: {t.activeCalls} active / {t.callsHandled} handled</span>
+                  <span>Codecs: {t.codecs.join(', ')}</span>
+                  <span>CID: {[t.sendRpid && 'RPID', t.sendPai && 'PAI'].filter(Boolean).join(' + ') || 'none'}</span>
+                  {t.lastRegisterAt && (
+                    <span>Last REG: {new Date(t.lastRegisterAt).toLocaleTimeString()}</span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── PSTN Trunk Config Tab ────────────────────────────────────────────────────
+
+interface TrunkFormState {
+  id: string;
+  name: string;
+  remoteHost: string;
+  remotePort: string;
+  username: string;
+  password: string;
+  localPubIp: string;
+  localPubPort: string;
+  imsPort: string;
+  codecs: string;
+  sendRpid: boolean;
+  sendPai: boolean;
+  enabled: boolean;
+}
+
+function emptyTrunkForm(): TrunkFormState {
+  return {
+    id: '',
+    name: '',
+    remoteHost: '',
+    remotePort: '5060',
+    username: 'ims',
+    password: '',
+    localPubIp: '',
+    localPubPort: '5060',
+    imsPort: '15160',
+    codecs: 'PCMU, PCMA, opus, h264',
+    sendRpid: true,
+    sendPai: true,
+    enabled: true,
+  };
+}
+
+function trunkToForm(t: ImsSipTrunkStatus): TrunkFormState {
+  return {
+    id: t.id,
+    name: t.name,
+    remoteHost: t.remoteHost,
+    remotePort: String(t.remotePort),
+    username: t.username,
+    password: '',
+    localPubIp: t.localPubIp,
+    localPubPort: String(t.localPubPort),
+    imsPort: String(t.imsPort),
+    codecs: t.codecs.join(', '),
+    sendRpid: t.sendRpid,
+    sendPai: t.sendPai,
+    enabled: t.enabled,
+  };
+}
+
+function PstnTrunkConfigTab({
+  trunks,
+  initialTrunkId,
+  onChanged,
+}: {
+  trunks: ImsSipTrunkStatus[];
+  initialTrunkId?: string;
+  onChanged: () => void;
+}) {
+  const [selectedId, setSelectedId] = useState<string | 'new'>(() => {
+    if (initialTrunkId && trunks.some((t) => t.id === initialTrunkId)) return initialTrunkId;
+    return trunks[0]?.id ?? 'new';
+  });
+  const [form, setForm] = useState<TrunkFormState>(() => {
+    const match = initialTrunkId
+      ? trunks.find((t) => t.id === initialTrunkId)
+      : trunks[0];
+    return match ? trunkToForm(match) : emptyTrunkForm();
+  });
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (initialTrunkId && trunks.some((t) => t.id === initialTrunkId)) {
+      const match = trunks.find((t) => t.id === initialTrunkId);
+      setSelectedId(initialTrunkId);
+      if (match) setForm(trunkToForm(match));
+    }
+  }, [initialTrunkId, trunks]);
+
+  const selectTrunk = (target: ImsSipTrunkStatus | 'new') => {
+    if (target === 'new') {
+      setSelectedId('new');
+      setForm(emptyTrunkForm());
+    } else {
+      setSelectedId(target.id);
+      setForm(trunkToForm(target));
+    }
+  };
+
+  const isEditing = selectedId !== 'new' && trunks.some((t) => t.id === selectedId);
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!form.remoteHost.trim() || !form.username.trim()) {
+      toast.error('PBX Host / IP and Username are required');
+      return;
+    }
+    if (!isEditing && !form.password) {
+      toast.error('Password is required when creating a new trunk');
+      return;
+    }
+    setSaving(true);
+    try {
+      const codecs = form.codecs.split(',').map((c) => c.trim()).filter(Boolean);
+      const res = await imsApi.upsertTrunk({
+        ...(isEditing ? { id: form.id } : {}),
+        ...(form.name.trim() ? { name: form.name.trim() } : {}),
+        remoteHost: form.remoteHost.trim(),
+        remotePort: Number(form.remotePort) || 5060,
+        username: form.username.trim(),
+        ...(form.password ? { password: form.password } : {}),
+        ...(form.localPubIp.trim() ? { localPubIp: form.localPubIp.trim() } : {}),
+        localPubPort: Number(form.localPubPort) || 5060,
+        imsPort: Number(form.imsPort) || 15160,
+        codecs: codecs.length > 0 ? codecs : ['PCMU', 'PCMA', 'opus', 'h264'],
+        sendRpid: form.sendRpid,
+        sendPai: form.sendPai,
+        enabled: form.enabled,
+      });
+      toast.success(
+        `Saved ${res.trunk.name}: ${res.trunk.enabled ? (res.trunk.registered ? 'Registered' : (res.trunk.lastRegisterStatus ?? 'Updated')) : 'Disabled'}`,
+      );
+      setSelectedId(res.trunk.id);
+      setForm(trunkToForm(res.trunk));
+      onChanged();
+    } catch (err: any) {
+      toast.error(err.response?.data?.error ?? String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <PstnTrunksCard
+        trunks={trunks}
+        onChanged={onChanged}
+        onConfigure={(id) => {
+          const t = id ? trunks.find((x) => x.id === id) : undefined;
+          selectTrunk(t ?? 'new');
+        }}
+      />
+
+      <div className="nms-card">
+        <div className="flex items-center justify-between gap-2 flex-wrap mb-4">
+          <div className="flex items-center gap-2">
+            <Settings className="w-4 h-4 text-nms-accent" />
+            <span className="text-sm font-semibold text-nms-text">
+              {isEditing ? `Configure Trunk: ${form.id}` : 'New PSTN / External SIP Trunk'}
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {trunks.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => selectTrunk(t)}
+                className={clsx(
+                  'text-xs px-2.5 py-1 rounded border transition-colors font-mono',
+                  selectedId === t.id
+                    ? 'border-nms-accent text-nms-accent bg-nms-accent/10'
+                    : 'border-nms-border text-nms-text-dim hover:text-nms-text',
+                )}
+              >
+                {t.username}@{t.remoteHost}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => selectTrunk('new')}
+              className={clsx(
+                'text-xs px-2.5 py-1 rounded border transition-colors flex items-center gap-1',
+                selectedId === 'new'
+                  ? 'border-nms-accent text-nms-accent bg-nms-accent/10'
+                  : 'border-nms-border text-nms-text-dim hover:text-nms-text',
+              )}
+            >
+              <Plus className="w-3 h-3" /> New Trunk
+            </button>
+          </div>
+        </div>
+
+        <form onSubmit={handleSave} className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-xs">
+            <label className="block">
+              <span className="text-nms-text-dim">Display Name</span>
+              <input
+                className="nms-input mt-1 w-full"
+                placeholder="FreePBX (10.0.0.21)"
+                value={form.name}
+                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+              />
+            </label>
+            <label className="block">
+              <span className="text-nms-text-dim">PBX / Provider Host *</span>
+              <input
+                className="nms-input mt-1 w-full font-mono"
+                placeholder="10.0.0.21"
+                value={form.remoteHost}
+                onChange={(e) => setForm((f) => ({ ...f, remoteHost: e.target.value }))}
+              />
+            </label>
+            <label className="block">
+              <span className="text-nms-text-dim">PBX SIP Port</span>
+              <input
+                type="number"
+                className="nms-input mt-1 w-full font-mono"
+                placeholder="5060"
+                value={form.remotePort}
+                onChange={(e) => setForm((f) => ({ ...f, remotePort: e.target.value }))}
+              />
+            </label>
+
+            <label className="block">
+              <span className="text-nms-text-dim">SIP Username *</span>
+              <input
+                className="nms-input mt-1 w-full font-mono"
+                placeholder="ims"
+                value={form.username}
+                onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))}
+              />
+            </label>
+            <label className="block">
+              <span className="text-nms-text-dim">
+                SIP Password {isEditing ? '(leave blank to keep current)' : '*'}
+              </span>
+              <input
+                type="password"
+                className="nms-input mt-1 w-full font-mono"
+                placeholder={isEditing ? '••••••••••••' : 'Password'}
+                value={form.password}
+                onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+              />
+            </label>
+            <label className="block">
+              <span className="text-nms-text-dim">Preferred Codecs (PBX side)</span>
+              <input
+                className="nms-input mt-1 w-full font-mono"
+                placeholder="PCMU, PCMA, opus, h264"
+                value={form.codecs}
+                onChange={(e) => setForm((f) => ({ ...f, codecs: e.target.value }))}
+              />
+            </label>
+
+            <label className="block">
+              <span className="text-nms-text-dim">Local PBX Bind IP (LAN / pub)</span>
+              <input
+                className="nms-input mt-1 w-full font-mono"
+                placeholder="Auto-detected LAN IP"
+                value={form.localPubIp}
+                onChange={(e) => setForm((f) => ({ ...f, localPubIp: e.target.value }))}
+              />
+            </label>
+            <label className="block">
+              <span className="text-nms-text-dim">Local PBX Bind Port</span>
+              <input
+                type="number"
+                className="nms-input mt-1 w-full font-mono"
+                placeholder="5060"
+                value={form.localPubPort}
+                onChange={(e) => setForm((f) => ({ ...f, localPubPort: e.target.value }))}
+              />
+            </label>
+            <label className="block">
+              <span className="text-nms-text-dim">Local IMS Bridge Port (UDP/TCP)</span>
+              <input
+                type="number"
+                className="nms-input mt-1 w-full font-mono"
+                placeholder="15160"
+                value={form.imsPort}
+                onChange={(e) => setForm((f) => ({ ...f, imsPort: e.target.value }))}
+              />
+            </label>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-6 pt-1 text-xs">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.enabled}
+                onChange={(e) => setForm((f) => ({ ...f, enabled: e.target.checked }))}
+                className="accent-nms-accent"
+              />
+              <span>Enabled (send periodic REGISTER &amp; accept calls)</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.sendRpid}
+                onChange={(e) => setForm((f) => ({ ...f, sendRpid: e.target.checked }))}
+                className="accent-nms-accent"
+              />
+              <span>Send Remote-Party-ID (RPID)</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.sendPai}
+                onChange={(e) => setForm((f) => ({ ...f, sendPai: e.target.checked }))}
+                className="accent-nms-accent"
+              />
+              <span>Send P-Asserted-Identity (PAI)</span>
+            </label>
+          </div>
+
+          <div className="flex items-center justify-between gap-3 pt-3 border-t border-nms-border flex-wrap">
+            <p className="text-[11px] text-nms-text-dim">
+              Applies immediately without restarting Kamailio. If you change the IMS bridge port or add a trunk on a new LAN IP, run IMS Configure to sync S-CSCF dispatcher and RTPengine interfaces.
+            </p>
+            <button type="submit" disabled={saving} className="nms-btn-primary text-xs shrink-0">
+              {saving ? 'Applying…' : isEditing ? 'Save & Re-register' : 'Create & Register Trunk'}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <div className="nms-card text-xs text-nms-text-dim space-y-2">
+        <p className="font-semibold text-nms-text">PBX / FreePBX Matching Settings (PJSIP)</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 font-mono text-[11px]">
+          <div>Authentication: Inbound (matches SIP Username &amp; Password)</div>
+          <div>Registration: Receive</div>
+          <div>Send RPID / Trust RPID: Yes (if RPID/PAI enabled)</div>
+          <div>Context: <span className="text-nms-text">from-internal</span> (required to dial extensions &amp; other Outbound Routes)</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Live Status tab ──────────────────────────────────────────────────────────
 // Everything here is read directly off the running system on every load —
 // S-CSCF's own registrar is db_mode=0/in-memory only (see PROJECT_STATE.md's
@@ -965,6 +1466,7 @@ function splitPrimaryAlias(uris: string[]): { primary: string; others: string[] 
 
 function LiveStatusTab() {
   const [live, setLive] = useState<ImsLiveStatus | null>(null);
+  const [trunks, setTrunks] = useState<ImsSipTrunkStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [deregistering, setDeregistering] = useState<Set<string>>(new Set());
@@ -972,8 +1474,12 @@ function LiveStatusTab() {
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const d = await imsApi.getLive();
+      const [d, tRes] = await Promise.all([
+        imsApi.getLive(),
+        imsApi.listTrunks().catch(() => ({ success: false, trunks: [] as ImsSipTrunkStatus[] })),
+      ]);
       setLive(d);
+      setTrunks(tRes.trunks ?? []);
     } catch (err: any) {
       toast.error('Failed to load live status: ' + String(err));
     } finally {
@@ -1244,6 +1750,11 @@ function LiveStatusTab() {
           </div>
         )}
       </div>
+
+      {/* PSTN / SIP Trunks */}
+      {trunks.length > 0 && (
+        <PstnTrunksCard trunks={trunks} onChanged={() => load(true)} compact />
+      )}
     </div>
   );
 }
@@ -1252,6 +1763,7 @@ function LiveStatusTab() {
 
 export function IMSPage() {
   const [status,     setStatus]     = useState<ImsStatus | null>(null);
+  const [trunks,     setTrunks]     = useState<ImsSipTrunkStatus[]>([]);
   const [loading,    setLoading]    = useState(true);
   const [acting,     setActing]     = useState(false);
   const [syncResult, setSyncResult] = useState<{ synced: number; failed: string[]; removed: number } | null>(null);
@@ -1260,13 +1772,18 @@ export function IMSPage() {
   const [removeLog,         setRemoveLog]         = useState('');
   const [removing,          setRemoving]          = useState(false);
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
-  const [activeTab,  setActiveTab]  = useState<'overview' | 'live' | 'configs'>('overview');
+  const [activeTab,  setActiveTab]  = useState<'overview' | 'live' | 'pstn' | 'configs'>('overview');
+  const [selectedTrunkId, setSelectedTrunkId] = useState<string | undefined>(undefined);
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const s = await imsApi.getStatus();
+      const [s, tRes] = await Promise.all([
+        imsApi.getStatus(),
+        imsApi.listTrunks().catch(() => ({ success: false, trunks: [] as ImsSipTrunkStatus[] })),
+      ]);
       setStatus(s);
+      setTrunks(tRes.trunks ?? []);
     } catch {
       /* ignore */
     } finally {
@@ -1446,8 +1963,9 @@ export function IMSPage() {
       <div className="flex justify-center">
         <div className="flex gap-1 p-1 bg-nms-surface-2 rounded-lg border border-nms-border">
           {([
-            { id: 'overview', label: 'Overview',    icon: <Settings className="w-4 h-4" /> },
+            { id: 'overview', label: 'Overview',     icon: <Settings className="w-4 h-4" /> },
             { id: 'live',     label: 'Live Status',  icon: <Activity className="w-4 h-4" /> },
+            { id: 'pstn',     label: 'PSTN Trunk',   icon: <Phone className="w-4 h-4" /> },
             { id: 'configs',  label: 'Config Files', icon: <FileText className="w-4 h-4" /> },
           ] as const).map(tabDef => (
             <button
@@ -1534,13 +2052,16 @@ export function IMSPage() {
                 <SvcBadge label="RTPengine"  active={s.services.rtpengine} />
                 <SvcBadge label="BIND9 DNS"  active={s.services.bind9} />
                 <SvcBadge label="MariaDB"    active={s.services.mariadb} />
+                {trunks.length > 0 && (
+                  <SvcBadge label="PSTN Trunk" active={trunks.some((t) => t.enabled && t.registered)} />
+                )}
               </div>
               {!s.pyhssInstalled && (
                 <div className="mt-3 text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
                   PyHSS not yet installed — run Install to clone PyHSS and install dependencies.
                 </div>
               )}
-              <div className="flex gap-4 mt-3 pt-3 border-t border-nms-border text-xs text-nms-text-dim">
+              <div className="flex flex-wrap gap-4 mt-3 pt-3 border-t border-nms-border text-xs text-nms-text-dim">
                 <span className={s.smfImsConfigured ? 'text-green-400' : ''}>
                   {s.smfImsConfigured ? '✓' : '○'} SMF IMS DNN
                 </span>
@@ -1549,8 +2070,24 @@ export function IMSPage() {
                 </span>
                 <span>{s.imsSubscribers} HSS subscribers</span>
                 <span>{s.open5gsSubscribers} Open5GS subscribers with MSISDN</span>
+                {trunks.length > 0 && (
+                  <span className={trunks.some((t) => t.enabled && t.registered) ? 'text-green-400' : 'text-amber-400'}>
+                    PSTN: {trunks.filter((t) => t.enabled && t.registered).length}/{trunks.length} registered
+                  </span>
+                )}
               </div>
             </div>
+          )}
+
+          {s && s.installed && (
+            <PstnTrunksCard
+              trunks={trunks}
+              onChanged={() => load(true)}
+              onConfigure={(id) => {
+                setSelectedTrunkId(id);
+                setActiveTab('pstn');
+              }}
+            />
           )}
 
           {s && (!s.installed || !s.pyhssInstalled) && (
@@ -1637,6 +2174,12 @@ export function IMSPage() {
         </>
       ) : activeTab === 'live' ? (
         <LiveStatusTab />
+      ) : activeTab === 'pstn' ? (
+        <PstnTrunkConfigTab
+          trunks={trunks}
+          initialTrunkId={selectedTrunkId}
+          onChanged={() => load(true)}
+        />
       ) : (
         <ConfigEditorTab />
       )}

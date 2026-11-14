@@ -76,17 +76,3 @@ scrape_configs:
         labels:
           nf: pyhss
           generation: ims
-
-  - job_name: vectorcore-smsc-metrics
-    static_configs:
-      - targets: ['127.0.0.1:8092']
-        labels:
-          nf: vectorcore-smsc
-          generation: sms
-
-  - job_name: vectorcore-mmsc-metrics
-    static_configs:
-      - targets: ['127.0.0.1:8090']
-        labels:
-          nf: vectorcore-mmsc
-          generation: mms

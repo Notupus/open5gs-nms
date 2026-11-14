@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   MessageSquare, CheckCircle, XCircle, AlertCircle, RefreshCw,
   Terminal, RotateCw, Settings, Users, Network, Power, BookOpen, ChevronDown, Send, Trash2,
-  Image, ExternalLink, Link2, Smartphone, Download, Server,
+  Image, ExternalLink, Link2, Smartphone, Download, Server, Search,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
@@ -18,8 +18,9 @@ import { imsApi } from '../api/ims';
 import type { ImsStatus } from '../api/ims';
 import { FEATURES } from '../config/features';
 import { useEscapeKey } from '../hooks/useKeyboardA11y';
+import { SmsInspectorView } from '../components/sms/SmsInspectorView';
 
-type PageTab = 'overview' | 'mms' | 'sms-ims' | 'sms-sgs' | 'sms-vectorcore';
+type PageTab = 'overview' | 'mms' | 'sms-ims' | 'sms-sgs' | 'sms-vectorcore' | 'sms-inspector';
 type SmsDeliveryMode = 'sgs' | 'ims' | 'vectorcore';
 
 function LogTerminal({ lines }: { lines: string }) {
@@ -387,6 +388,7 @@ function PageTabBar({ pageTab, setPageTab, activeDeliveryMode }: {
     { id: 'sms-ims', label: 'SMS via IMS', Icon: MessageSquare, activeIfMode: 'ims' as const },
     { id: 'sms-sgs', label: 'SMS via SGs', Icon: Network, activeIfMode: 'sgs' as const },
     ...(FEATURES.vectorcoreSmsc ? [{ id: 'sms-vectorcore' as const, label: 'SMS via VectorCore', Icon: Server, activeIfMode: 'vectorcore' as const }] : []),
+    { id: 'sms-inspector', label: 'SMS Inspector & CDR', Icon: Search },
   ];
   return (
     <div className="flex justify-center">
@@ -1974,6 +1976,7 @@ export function SMSPage() {
       {pageTab === 'sms-ims' && <SmsImsTab imsStatus={imsStatus} activeDeliveryMode={imsStatus?.smsDeliveryMode} />}
       {pageTab === 'sms-sgs' && <SmsSgsTab activeDeliveryMode={imsStatus?.smsDeliveryMode} />}
       {pageTab === 'sms-vectorcore' && FEATURES.vectorcoreSmsc && <VectorcoreSmscTab activeDeliveryMode={imsStatus?.smsDeliveryMode} />}
+      {pageTab === 'sms-inspector' && <SmsInspectorView />}
     </div>
   );
 }

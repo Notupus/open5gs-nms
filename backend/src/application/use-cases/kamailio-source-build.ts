@@ -6,6 +6,7 @@ import {
   CDP_COMMON_C_MARKER, CDP_COMMON_C_PATCH, CDP_ACCTSM_C_MARKER, CDP_ACCTSM_C_PATCH,
   CDP_MOD_C_MARKER, CDP_MOD_C_PATCH,
   SECVERIFY_C_MARKER, SECVERIFY_C_PATCH,
+  IPSEC_MOD_CFLAGS_C_MARKER, IPSEC_MOD_CFLAGS_C_PATCH,
 } from './kamailio-ims-modules-build';
 
 const execFileAsync = promisify(execFile);
@@ -204,6 +205,7 @@ echo "==STEP:patching=="
 # sequential apply against a freshly cloned, unmodified ${opts.targetTag} checkout before
 # being wired in here.
 IPSEC_C=src/modules/ims_ipsec_pcscf/cmd.c
+IPSEC_MOD_C=src/modules/ims_ipsec_pcscf/ims_ipsec_pcscf_mod.c
 REGISTRAR_C=src/modules/ims_registrar_pcscf/save.c
 CCR_C=src/modules/ims_charging/ccr.c
 IMS_RO_C=src/modules/ims_charging/ims_ro.c
@@ -233,6 +235,17 @@ PATCHEOF
   patch -p1 --forward --batch < /tmp/secverify.c.patch
   grep -q "${SECVERIFY_C_MARKER}" "$IPSEC_C" || { echo "ERROR: $IPSEC_C sec-agree patch marker missing after apply — upstream source may have changed, review manually."; exit 1; }
   echo "  PATCH $IPSEC_C (sec-agree on MT INVITE)"
+fi
+
+if grep -q "${IPSEC_MOD_CFLAGS_C_MARKER}" "$IPSEC_MOD_C"; then
+  echo "  ok    $IPSEC_MOD_C (already patched for uint cflags cast)"
+else
+  cat > /tmp/ims_ipsec_pcscf_mod.c.patch <<'PATCHEOF'
+${IPSEC_MOD_CFLAGS_C_PATCH}
+PATCHEOF
+  patch -p1 --forward --batch < /tmp/ims_ipsec_pcscf_mod.c.patch
+  grep -q "${IPSEC_MOD_CFLAGS_C_MARKER}" "$IPSEC_MOD_C" || { echo "ERROR: $IPSEC_MOD_C patch marker missing after apply — upstream source may have changed, review manually."; exit 1; }
+  echo "  PATCH $IPSEC_MOD_C (uint _cflags cast in w_create/w_forward)"
 fi
 
 if grep -q "${SAVE_C_MARKER}" "$REGISTRAR_C"; then

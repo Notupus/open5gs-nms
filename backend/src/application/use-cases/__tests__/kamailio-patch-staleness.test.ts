@@ -16,7 +16,7 @@ const SRC = path.resolve(__dirname, '../../..');
 const read = (rel: string) => fs.readFileSync(path.join(SRC, rel), 'utf-8');
 
 describe('Kamailio patch-set staleness', () => {
-  // The exact patch set the 6.0.8 pipeline applies, as of KAMAILIO_PATCH_REV 2.
+  // The exact patch set the 6.0.8 pipeline applies, as of KAMAILIO_PATCH_REV 3.
   // Asserting the SET rather than a count: a patch could be swapped one-for-one
   // and a count would not notice. If you change this list you must bump
   // KAMAILIO_PATCH_REV, or every existing deployment will keep reporting itself
@@ -28,6 +28,7 @@ describe('Kamailio patch-set staleness', () => {
     'CDP_MOD_C_PATCH',
     'CMD_C_PATCH_KAMAILIO6',
     'IMS_RO_C_PATCH',
+    'IPSEC_MOD_CFLAGS_C_PATCH',
     'SAVE_C_PATCH',
     'SECVERIFY_C_PATCH',
   ];
@@ -36,7 +37,7 @@ describe('Kamailio patch-set staleness', () => {
     const mods = read('application/use-cases/kamailio-ims-modules-build.ts');
     const pipeline = read('application/use-cases/kamailio-source-build.ts');
 
-    expect(mods).toMatch(/export const KAMAILIO_PATCH_REV = 2;/);
+    expect(mods).toMatch(/export const KAMAILIO_PATCH_REV = 3;/);
 
     // Note the pattern: CMD_C_PATCH_KAMAILIO6 does NOT end in `_PATCH`, so a
     // naive /_PATCH\}/ match silently misses it and undercounts by one.

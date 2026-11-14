@@ -21,7 +21,7 @@ export const BUILD_WORKDIR = '/opt/kamailio-ims-modules-build';
 export const MODULES_DIR = '/usr/lib/x86_64-linux-gnu/kamailio/modules';
 
 // Bump whenever a patch below is added/changed.
-export const PATCH_REV = 2;
+export const PATCH_REV = 3;
 
 // Unique string only present once a file has been patched — used both as the
 // source-level idempotency check (grepped against the .c file mid-build,
@@ -39,6 +39,7 @@ export const CDP_COMMON_C_MARKER = 'NMS patch 2026-10-01';
 export const CDP_ACCTSM_C_MARKER = 'NMS patch 2026-10-01';
 export const SECVERIFY_C_MARKER = 'IPSEC_FORWARD_ADD_SECVERIFY';
 export const CDP_MOD_C_MARKER = 'NMS patch: cdp process slot';
+export const IPSEC_MOD_CFLAGS_C_MARKER = 'NMS patch: uint cflags cast';
 
 /**
  * Revision of the C-source patch SET that the Kamailio 6.0.8 source build
@@ -64,8 +65,12 @@ export const CDP_MOD_C_MARKER = 'NMS patch: cdp process slot';
  *         entirely: applied by hand 2026-08-02, then silently dropped by the
  *         2026-10-03 rebuild, with a stale marker file making IMS Install skip
  *         it forever).
+ * rev 3 — adds IPSEC_MOD_CFLAGS_C_PATCH (unit_fixup() stores unsigned int* in
+ *         _cflags, but w_create/w_forward dereferenced *_cflags as signed char
+ *         and sign-extended bit 7 into bits 8..31, forcing
+ *         IPSEC_FORWARD_ADD_SECVERIFY (1024) on even when flags=897 (0x381)).
  */
-export const KAMAILIO_PATCH_REV = 2;
+export const KAMAILIO_PATCH_REV = 3;
 
 // Real bug, fixed live 2026-08-02 and nearly lost again 2026-10-03: stock
 // cdp_mod.c registers one fewer process slot than the module actually forks
@@ -892,6 +897,40 @@ export const IMS_MODULES_BUILD_STEPS = [
 ] as const;
 export type ImsModulesBuildStep = typeof IMS_MODULES_BUILD_STEPS[number];
 
+// Upstream bug in ims_ipsec_pcscf_mod.c: unit_fixup() allocates an unsigned int
+// via pkg_malloc(sizeof(unsigned int)) and stores its pointer in *_cflags
+// (typed as char *), but w_create() and w_forward() dereference *_cflags as a
+// single signed char ((int)(*_cflags)). Whenever bit 7 (0x80 = 128, e.g.
+// IPSEC_CREATE_USE_NAT_PING or IPSEC_FORWARD_FLAGS = 897 = 0x381) is set, the
+// low byte 0x81 (-127 signed char) sign-extends to 0xFFFFFF81, silently forcing
+// bits 8..31 all to 1 -- including IPSEC_FORWARD_ADD_SECVERIFY (1 << 10 = 1024),
+// breaking sec-agree opt-out UEs such as POCO F5 (420 Bad Extension:
+// Unsupported: sec-agree on MT INVITE).
+export const IPSEC_MOD_CFLAGS_C_PATCH = String.raw`--- a/src/modules/ims_ipsec_pcscf/ims_ipsec_pcscf_mod.c
++++ b/src/modules/ims_ipsec_pcscf/ims_ipsec_pcscf_mod.c
+@@ -529,16 +529,18 @@
+  */
+ static int w_create(struct sip_msg *_m, char *_d, char *_cflags)
+ {
++	/* NMS patch: uint cflags cast -- unit_fixup() passes unsigned int*, not char* */
+ 	if(_cflags) {
+-		return ipsec_create(_m, (udomain_t *)_d, ((int)(*_cflags)));
++		return ipsec_create(_m, (udomain_t *)_d, ((int)(*((unsigned int *)_cflags))));
+ 	}
+ 	return ipsec_create(_m, (udomain_t *)_d, 0);
+ }
+ 
+ static int w_forward(struct sip_msg *_m, char *_d, char *_cflags)
+ {
++	/* NMS patch: uint cflags cast */
+ 	if(_cflags) {
+-		return ipsec_forward(_m, (udomain_t *)_d, ((int)(*_cflags)));
++		return ipsec_forward(_m, (udomain_t *)_d, ((int)(*((unsigned int *)_cflags))));
+ 	}
+ 	return ipsec_forward(_m, (udomain_t *)_d, 0);
+ }
+`;
+
 // Full build script. Rebuilds/redeploys ims_ipsec_pcscf.so,
 // ims_registrar_pcscf.so, and ims_charging.so -- every other kamailio-ims-
 // modules .so is left completely untouched. Deliberately does NOT restart
@@ -969,7 +1008,19 @@ echo "source tree ready: $(pwd)"
 
 echo "==STEP:patching=="
 IPSEC_C=src/modules/ims_ipsec_pcscf/cmd.c
+IPSEC_MOD_C=src/modules/ims_ipsec_pcscf/ims_ipsec_pcscf_mod.c
 REGISTRAR_C=src/modules/ims_registrar_pcscf/save.c
+
+if grep -q "${IPSEC_MOD_CFLAGS_C_MARKER}" "$IPSEC_MOD_C"; then
+  echo "  ok    $IPSEC_MOD_C (already patched)"
+else
+  cat > /tmp/ims_ipsec_pcscf_mod.c.patch <<'PATCHEOF'
+${IPSEC_MOD_CFLAGS_C_PATCH}
+PATCHEOF
+  patch -p1 --forward --batch < /tmp/ims_ipsec_pcscf_mod.c.patch
+  grep -q "${IPSEC_MOD_CFLAGS_C_MARKER}" "$IPSEC_MOD_C" || { echo "ERROR: $IPSEC_MOD_C patch marker missing after apply -- upstream source may have changed, review manually."; exit 1; }
+  echo "  PATCH $IPSEC_MOD_C"
+fi
 
 if grep -q "${CMD_C_MARKER}" "$IPSEC_C"; then
   echo "  ok    $IPSEC_C (already patched)"

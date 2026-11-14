@@ -6,7 +6,7 @@ import { configApi, serviceApi, interfaceApi, radioBlockApi, gnbBlockApi, hnbBlo
 import { ConfirmModal } from '../common/ConfirmModal';
 import { sasApi, type SasStatus } from '../../api/sas';
 import { recentNtpClients, type ChronyClient } from '../../api/chrony';
-import { imsApi, type ImsStatus, type ImsCallStats } from '../../api/ims';
+import { imsApi, type ImsStatus, type ImsCallStats, type ImsSipTrunkStatus } from '../../api/ims';
 import { vowifiApi, type VowifiStatus, type VectorcoreStats } from '../../api/vowifi';
 import { pstnApi, type PstnStatus } from '../../api/pstn';
 import { asterisk2gApi, type Asterisk2gStatus } from '../../api/asterisk-2g';
@@ -174,6 +174,7 @@ export function DashboardPage(): JSX.Element {
   const [ues2G, setUes2G] = useState<{ active: number; total: number }>({ active: 0, total: 0 });
   const [imsStatus, setImsStatus] = useState<ImsStatus | null>(null);
   const [imsCallStats, setImsCallStats] = useState<ImsCallStats | null>(null);
+  const [imsTrunks, setImsTrunks] = useState<ImsSipTrunkStatus[]>([]);
   const [vowifiStatus, setVowifiStatus] = useState<VowifiStatus | null>(null);
   const [vowifiStats, setVowifiStats] = useState<VectorcoreStats | null>(null);
   const [pstnStatus, setPstnStatus] = useState<PstnStatus | null>(null);
@@ -225,6 +226,7 @@ export function DashboardPage(): JSX.Element {
     }
     // IMS status — service health, live S-CSCF registrar count, active IPsec SAs
     imsApi.getStatus().then(setImsStatus).catch(() => {});
+    imsApi.listTrunks().then(r => setImsTrunks(r.trunks ?? [])).catch(() => {});
     // VoWiFi status — service health, for the split half of the IMS Status card below.
     vowifiApi.getStatus().then(setVowifiStatus).catch(() => {});
     // PSTN Gateway status — just need services.asterisk for the Network
@@ -840,6 +842,20 @@ export function DashboardPage(): JSX.Element {
                   <p className="text-xs text-nms-text-dim mt-1">
                     {imsStatus?.ipsecSaCount ?? 0} IPsec SAs
                   </p>
+                  {imsTrunks.length > 0 && (() => {
+                    const regCount = imsTrunks.filter((t) => t.enabled && t.registered).length;
+                    const activeTrunkCalls = imsTrunks.reduce((sum, t) => sum + (t.activeCalls || 0), 0);
+                    return (
+                      <p className="text-xs text-nms-text-dim mt-0.5 flex items-center gap-1.5">
+                        <span className={`w-1.5 h-1.5 rounded-full inline-block ${regCount > 0 ? 'bg-green-400' : 'bg-amber-400'}`} />
+                        <span>
+                          PSTN: {regCount}/{imsTrunks.length} {regCount > 0 ? 'Registered' : 'Unregistered'}
+                          {imsTrunks.length === 1 ? ` (${imsTrunks[0].remoteHost})` : ''}
+                          {activeTrunkCalls > 0 ? ` • ${activeTrunkCalls} active` : ''}
+                        </span>
+                      </p>
+                    );
+                  })()}
                 </div>
                 <div className="p-2.5 rounded-lg bg-nms-accent/10">
                   <PhoneCall className="w-5 h-5 text-nms-accent" />
@@ -1077,6 +1093,14 @@ export function DashboardPage(): JSX.Element {
           <AddonServiceMiniCard name="P-CSCF" vendor="Kamailio" active={!!imsStatus?.services?.pcscf} loading={!imsStatus} />
           <AddonServiceMiniCard name="I-CSCF" vendor="Kamailio" active={!!imsStatus?.services?.icscf} loading={!imsStatus} />
           <AddonServiceMiniCard name="S-CSCF" vendor="Kamailio" active={!!imsStatus?.services?.scscf} loading={!imsStatus} />
+          {imsTrunks.length > 0 && (
+            <AddonServiceMiniCard
+              name="PSTN Trunk"
+              vendor={imsTrunks.length === 1 ? imsTrunks[0].remoteHost : `${imsTrunks.length} Trunks`}
+              active={imsTrunks.some((t) => t.enabled && t.registered)}
+              loading={false}
+            />
+          )}
           {/* Both are real, separate Asterisk instances (see asterisk-2g-
               controller.ts's module header) — lead with the shared product
               name and use the subtitle to tell them apart, rather than two

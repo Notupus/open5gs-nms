@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import * as dgram from 'dgram';
 import * as net from 'net';
+import * as os from 'os';
 import * as crypto from 'crypto';
 import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
@@ -152,9 +153,22 @@ const BASE_SIP_PORT = 15100;
 const MAX_INSTANCES = 50;
 const REGISTER_REFRESH_MS = 600_000; // 10 min — well inside the 3600s Expires window
 
+/**
+ * Return `ip` if it is assigned to a local interface so sockets bind it
+ * directly instead of 0.0.0.0 (which breaks conntrack un-SNAT if an
+ * asymmetric MASQUERADE rule rewrites 10.46.0.1 loopback traffic).
+ */
+function resolveLocalBindHost(ip: string): string | undefined {
+  for (const addrs of Object.values(os.networkInterfaces())) {
+    if (addrs?.some((a) => a.address === ip)) return ip;
+  }
+  return undefined;
+}
+
 class ImsTestNumberInstance {
   private readonly sock = dgram.createSocket('udp4');
   private readonly tcpServer: net.Server;
+  private readonly bindHost: string | undefined;
   private readonly activeCalls = new Map<string, ActiveCall>();
   private readonly callId = `ims-test-${randHex(8)}`;
   private cseq = 1;
@@ -172,6 +186,7 @@ class ImsTestNumberInstance {
     private readonly localPort: number,
     private readonly logger: pino.Logger,
   ) {
+    this.bindHost = resolveLocalBindHost(pcscfIp);
     this.tcpServer = net.createServer((conn) => {
       conn.on('data', (data) => this.handleIncoming(data.toString('utf-8'), (r) => conn.write(r, 'utf-8'), 'TCP'));
       conn.on('error', () => { /* connection reset by peer etc — not actionable */ });
@@ -191,11 +206,53 @@ class ImsTestNumberInstance {
     };
   }
 
+  private contactHeader(): string {
+    // 3GPP MMTel ICSI + audio feature tags ensure P-CSCF preserves this Contact via C-Params
+    // on MO replies instead of overwriting it with <sip:$Ri:$Rp>.
+    return `Contact: <sip:${this.identity.imsi}@${this.pcscfIp}:${this.localPort};transport=udp>;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";audio\r\n`;
+  }
+
   private send(msg: string, port = this.pcscfPort, ip = this.pcscfIp): void {
     this.sock.send(Buffer.from(msg, 'utf-8'), port, ip);
   }
 
-  private buildRegister(authHeader?: string): string {
+  private createRtpEchoSocket(): { rtpSock: dgram.Socket; localRtpPort: number } {
+    const rtpSock = dgram.createSocket('udp4');
+    const localRtpPort = 16000 + Math.floor(Math.random() * 4000);
+    rtpSock.bind({ port: localRtpPort, address: this.bindHost });
+    let rxCount = 0;
+    rtpSock.on('message', (rtpMsg, rtpRinfo) => {
+      rxCount++;
+      const pt = rtpMsg.length >= 2 ? (rtpMsg[1] & 0x7f) : -1;
+      const isRtp = rtpMsg.length >= 12 && (rtpMsg[0] >> 6) === 2 && (pt < 72 || pt > 76);
+      let out = rtpMsg;
+      if (isRtp) {
+        out = Buffer.from(rtpMsg);
+        // RFC 3550 §8.2: rewrite SSRC so the UE doesn't drop echoed audio as a same-SSRC loop.
+        out.writeUInt32BE((out.readUInt32BE(8) ^ 0x5a5a5a5a) >>> 0, 8);
+      }
+      if (rxCount === 1 || rxCount === 50 || rxCount % 250 === 0) {
+        this.logger.info(
+          {
+            msisdn: this.identity.msisdn,
+            localRtpPort,
+            peer: `${rtpRinfo.address}:${rtpRinfo.port}`,
+            bytes: rtpMsg.length,
+            rxCount,
+            pt,
+            ssrcIn: isRtp ? rtpMsg.readUInt32BE(8).toString(16) : undefined,
+            ssrcOut: isRtp ? out.readUInt32BE(8).toString(16) : undefined,
+          },
+          'ims-test-number: echoing RTP packet',
+        );
+      }
+      rtpSock.send(out, rtpRinfo.port, rtpRinfo.address); // echo straight back to live source
+    });
+    rtpSock.on('error', (err) => this.logger.warn({ err: String(err), msisdn: this.identity.msisdn, localRtpPort }, 'ims-test-number: RTP socket error'));
+    return { rtpSock, localRtpPort };
+  }
+
+  private buildRegister(authHeader?: string, expiresSec = 3600): string {
     const branch = `z9hG4bK${randHex(8)}`;
     const c = this.cseq++;
     let msg =
@@ -206,8 +263,8 @@ class ImsTestNumberInstance {
       `From: <sip:${this.identity.imsi}@${this.imsDomain}>;tag=${randHex(6)}\r\n` +
       `Call-ID: ${this.callId}\r\n` +
       `CSeq: ${c} REGISTER\r\n` +
-      `Contact: <sip:${this.identity.imsi}@${this.pcscfIp}:${this.localPort};transport=udp>\r\n` +
-      `Expires: 3600\r\n`;
+      this.contactHeader() +
+      `Expires: ${expiresSec}\r\n`;
     if (authHeader) msg += `${authHeader}\r\n`;
     msg += `Content-Length: 0\r\n\r\n`;
     return msg;
@@ -229,8 +286,8 @@ class ImsTestNumberInstance {
     });
   }
 
-  private async registerOnce(): Promise<ParsedSip> {
-    this.send(this.buildRegister());
+  private async registerOnce(expiresSec = 3600): Promise<ParsedSip> {
+    this.send(this.buildRegister(undefined, expiresSec));
     const challenge = await this.waitFor((p) => /^SIP\/2\.0 401/.test(p.statusLine), 5000);
     const { realm, nonce, qop } = parseWwwAuth(challenge.headers['www-authenticate'] ?? '');
 
@@ -246,7 +303,7 @@ class ImsTestNumberInstance {
       `nonce="${nonce}", uri="${uri}", response="${response}", algorithm=MD5, ` +
       `qop=${qop}, nc=${nc}, cnonce="${cnonce}"`;
 
-    this.send(this.buildRegister(authHeader));
+    this.send(this.buildRegister(authHeader, expiresSec));
     return this.waitFor((p) => /^SIP\/2\.0 (200|4\d\d|5\d\d)/.test(p.statusLine), 5000);
   }
 
@@ -281,20 +338,25 @@ class ImsTestNumberInstance {
       const rtpmapMatch = /a=rtpmap:(\d+) (\S+)/.exec(parsed.body);
       const payloadType = rtpmapMatch ? rtpmapMatch[1] : '0';
       const codecLine = rtpmapMatch ? rtpmapMatch[2] : 'PCMU/8000';
+      const codecClock = /\/(\d+)/.exec(codecLine)?.[1] ?? '8000';
       // Real VoLTE offers use parametrized codecs (EVS/AMR) whose fmtp params
       // are part of the codec identity — reusing rtpmap without the matching
       // fmtp is an incomplete negotiation from the UAC's perspective.
       const fmtpMatch = new RegExp(`a=fmtp:${payloadType} ([^\\r\\n]+)`).exec(parsed.body);
       const fmtpLine = fmtpMatch ? `a=fmtp:${payloadType} ${fmtpMatch[1]}\r\n` : '';
+      // Preserve RFC 4733 telephone-event matching the audio codec clock rate (or first offered).
+      const teMatches = [...parsed.body.matchAll(/a=rtpmap:(\d+) telephone-event\/(\d+)/gi)];
+      const chosenTe = teMatches.find((m) => m[2] === codecClock) ?? teMatches[0];
+      const tePt = chosenTe?.[1];
+      const teRate = chosenTe?.[2];
+      const teFmtpMatch = tePt ? new RegExp(`a=fmtp:${tePt} ([^\\r\\n]+)`).exec(parsed.body) : null;
+      const teSdpLines = tePt && teRate
+        ? `a=rtpmap:${tePt} telephone-event/${teRate}\r\n` + (teFmtpMatch ? `a=fmtp:${tePt} ${teFmtpMatch[1]}\r\n` : 'a=fmtp:' + tePt + ' 0-15\r\n')
+        : '';
       // RFC 3312 preconditions — see file header point 2.
       const hasPrecondition = /a=des:qos mandatory local/.test(parsed.body);
 
-      const rtpSock = dgram.createSocket('udp4');
-      const localRtpPort = 16000 + Math.floor(Math.random() * 4000);
-      rtpSock.bind(localRtpPort);
-      rtpSock.on('message', (rtpMsg, rtpRinfo) => {
-        rtpSock.send(rtpMsg, rtpRinfo.port, rtpRinfo.address); // echo straight back to live source
-      });
+      const { rtpSock, localRtpPort } = this.createRtpEchoSocket();
 
       const toTag = randHex(6);
       const myIp = this.pcscfIp;
@@ -304,22 +366,32 @@ class ImsTestNumberInstance {
       const sdpBody = (mediaDirection: string, extraLines = ''): string =>
         `v=0\r\no=- ${Date.now()} 1 IN IP4 ${myIp}\r\ns=echo-test\r\n` +
         `c=IN IP4 ${myIp}\r\nt=0 0\r\n` +
-        `m=audio ${localRtpPort} RTP/AVP ${payloadType}\r\n` +
+        `m=audio ${localRtpPort} RTP/AVP ${payloadType}${tePt ? ` ${tePt}` : ''}\r\n` +
         `a=rtpmap:${payloadType} ${codecLine}\r\n` +
         fmtpLine +
+        teSdpLines +
         `a=rtcp:${localRtpPort + 1}\r\na=ptime:20\r\n` +
         extraLines +
         `a=${mediaDirection}\r\n`;
+
+      const recordRouteHdr = parsed.headers['record-route']
+        ? `Record-Route: ${parsed.headers['record-route']}\r\n`
+        : '';
 
       const call: ActiveCall = {
         rtpSock, toTag, finalSent: false, sdpBody,
         sendFinal200: () => {
           if (call.finalSent) return;
           call.finalSent = true;
-          const sdpAnswer = sdpBody('sendrecv', 'a=curr:qos local sendrecv\r\na=curr:qos remote sendrecv\r\n');
+          const sdpAnswer = sdpBody(
+            'sendrecv',
+            hasPrecondition ? 'a=curr:qos local sendrecv\r\na=curr:qos remote sendrecv\r\n' : '',
+          );
           const okMsg =
             `SIP/2.0 200 OK\r\nVia: ${via}\r\nFrom: ${from}\r\nTo: ${to};tag=${toTag}\r\nCall-ID: ${cid}\r\nCSeq: ${cseqHdr}\r\n` +
-            `Contact: <sip:${identity.imsi}@${myIp}:${localPort};transport=udp>\r\n` +
+            recordRouteHdr +
+            this.contactHeader() +
+            `Allow: INVITE, ACK, CANCEL, BYE, UPDATE, PRACK, INFO, OPTIONS\r\n` +
             `Content-Type: application/sdp\r\nContent-Length: ${Buffer.byteLength(sdpAnswer)}\r\n\r\n${sdpAnswer}`;
           reply(okMsg);
           this.logger.info({ msisdn: identity.msisdn, localRtpPort }, 'ims-test-number: answered call');
@@ -333,7 +405,8 @@ class ImsTestNumberInstance {
           'a=curr:qos remote none\r\na=des:qos mandatory remote sendrecv\r\n');
         const progressMsg =
           `SIP/2.0 183 Session Progress\r\nVia: ${via}\r\nFrom: ${from}\r\nTo: ${to};tag=${toTag}\r\nCall-ID: ${cid}\r\nCSeq: ${cseqHdr}\r\n` +
-          `Contact: <sip:${identity.imsi}@${myIp}:${localPort};transport=udp>\r\n` +
+          recordRouteHdr +
+          this.contactHeader() +
           `Content-Type: application/sdp\r\nContent-Length: ${Buffer.byteLength(sdpAnswer)}\r\n\r\n${sdpAnswer}`;
         reply(progressMsg);
         // Fallback if the caller never sends UPDATE — don't hang the call forever.
@@ -347,7 +420,7 @@ class ImsTestNumberInstance {
         const sdpAnswer = call.sdpBody('sendrecv', 'a=curr:qos local sendrecv\r\na=curr:qos remote sendrecv\r\n');
         reply(
           `SIP/2.0 200 OK\r\nVia: ${via}\r\nFrom: ${from}\r\nTo: ${to}\r\nCall-ID: ${cid}\r\nCSeq: ${cseqHdr}\r\n` +
-          `Contact: <sip:${this.identity.imsi}@${this.pcscfIp}:${this.localPort};transport=udp>\r\n` +
+          this.contactHeader() +
           `Content-Type: application/sdp\r\nContent-Length: ${Buffer.byteLength(sdpAnswer)}\r\n\r\n${sdpAnswer}`
         );
         call.sendFinal200();
@@ -364,6 +437,16 @@ class ImsTestNumberInstance {
         this.outboundCall = null;
       }
       reply(`SIP/2.0 200 OK\r\nVia: ${via}\r\nFrom: ${from}\r\nTo: ${to}\r\nCall-ID: ${cid}\r\nCSeq: ${cseqHdr}\r\nContent-Length: 0\r\n\r\n`);
+    } else if (method === 'INFO') {
+      const hasActive = this.activeCalls.has(cid) || (this.outboundCall && cid === this.outboundCall.callId);
+      if (hasActive) {
+        reply(`SIP/2.0 200 OK\r\nVia: ${via}\r\nFrom: ${from}\r\nTo: ${to}\r\nCall-ID: ${cid}\r\nCSeq: ${cseqHdr}\r\nContent-Length: 0\r\n\r\n`);
+      } else {
+        reply(`SIP/2.0 481 Call/Transaction Does Not Exist\r\nVia: ${via}\r\nFrom: ${from}\r\nTo: ${to}\r\nCall-ID: ${cid}\r\nCSeq: ${cseqHdr}\r\nContent-Length: 0\r\n\r\n`);
+      }
+    } else if (method === 'OPTIONS') {
+      const toReply = /;tag=/i.test(to) ? to : `${to};tag=${randHex(6)}`;
+      reply(`SIP/2.0 200 OK\r\nVia: ${via}\r\nFrom: ${from}\r\nTo: ${toReply}\r\nCall-ID: ${cid}\r\nCSeq: ${cseqHdr}\r\nAllow: INVITE, ACK, CANCEL, BYE, UPDATE, PRACK, INFO, OPTIONS\r\nContent-Length: 0\r\n\r\n`);
     }
     // ACK: no-op
   }
@@ -411,6 +494,7 @@ class ImsTestNumberInstance {
       `From: <sip:${this.identity.imsi}@${this.imsDomain}>;tag=${call.fromTag}\r\n` +
       `Call-ID: ${call.callId}\r\n` +
       `CSeq: ${cseqNum} UPDATE\r\n` +
+      this.contactHeader() +
       this.routeHeader(call) +
       `Content-Type: application/sdp\r\nContent-Length: ${Buffer.byteLength(sdpBody)}\r\n\r\n${sdpBody}`;
     this.send(update);
@@ -426,7 +510,15 @@ class ImsTestNumberInstance {
     const toTagMatch = /tag=([^;]+)/.exec(toHeader);
     const contactUri = parseContactUri(parsed.headers['contact']);
     if (contactUri) call.remoteTarget = contactUri;
-    if (parsed.headers['record-route'] && !call.routeSet) call.routeSet = parsed.headers['record-route'];
+    if (parsed.headers['record-route'] && !call.routeSet) {
+      // RFC 3261 §12.1.2: UAC route set is the Record-Route list in reverse order.
+      call.routeSet = parsed.headers['record-route']
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .reverse()
+        .join(', ');
+    }
 
     if (cseqMethod === 'UPDATE') {
       // 200 OK to our own precondition UPDATE — nothing further to do, media is
@@ -434,19 +526,40 @@ class ImsTestNumberInstance {
       return;
     }
 
+    if (parsed.body) {
+      const pickedPt = /^m=audio\s+\d+\s+\S+\s+(\d+)/im.exec(parsed.body)?.[1];
+      if (pickedPt === '116') {
+        call.payloadType = '116';
+        call.codecLine = 'EVS/16000';
+        call.fmtpLine = 'a=fmtp:116 br=5.9-24.4; bw=nb-swb; max-red=220; mode-set=0,1,2\r\n';
+      } else if (pickedPt === '127') {
+        call.payloadType = '127';
+        call.codecLine = 'EVS/16000';
+        call.fmtpLine = 'a=fmtp:127 max-red=0; br=9.6-24.4; bw=nb-swb\r\n';
+      }
+    }
+
+    const peerUsesPreconditions =
+      /a=(curr|des|conf):qos/i.test(parsed.body) ||
+      /\bprecondition\b/i.test(parsed.headers['require'] ?? '');
+
     // Everything below is in response to the original INVITE.
     if (/^SIP\/2\.0 (180|183)/.test(parsed.statusLine)) {
       call.state = 'ringing';
       if (toTagMatch) {
         call.toTag = toTagMatch[1];
-        this.sendPreconditionUpdate(call, toHeader);
+        if (peerUsesPreconditions && !call.updateSent) {
+          this.sendPreconditionUpdate(call, toHeader);
+        }
       }
     } else if (/^SIP\/2\.0 200/.test(parsed.statusLine)) {
       if (toTagMatch) call.toTag = toTagMatch[1];
       call.state = 'answered';
-      // If no provisional response ever arrived (straight to 200), we still need
-      // to confirm our own precondition before real media can flow.
-      if (!call.updateSent) this.sendPreconditionUpdate(call, toHeader);
+      // If preconditions were negotiated without a prior UPDATE (e.g. straight
+      // to 200), confirm our precondition before media flows.
+      if (peerUsesPreconditions && !call.updateSent) {
+        this.sendPreconditionUpdate(call, toHeader);
+      }
       const branch = `z9hG4bK${randHex(8)}`;
       // RFC 3261: ACK's Request-URI must be the peer's own Contact (remote target),
       // not the original dialed address — confirmed live this matters: using the
@@ -475,23 +588,17 @@ class ImsTestNumberInstance {
 
   async placeCall(targetNumber: string): Promise<void> {
     if (this.outboundCall) throw new Error('This test number already has an active outbound call — hang up first.');
-    const rtpSock = dgram.createSocket('udp4');
-    const localRtpPort = 16000 + Math.floor(Math.random() * 4000);
-    rtpSock.bind(localRtpPort);
-    rtpSock.on('message', (rtpMsg, rtpRinfo) => {
-      rtpSock.send(rtpMsg, rtpRinfo.port, rtpRinfo.address); // echo straight back to live source
-    });
+    const { rtpSock, localRtpPort } = this.createRtpEchoSocket();
 
     const callId = `ims-test-call-${randHex(8)}`;
     const fromTag = randHex(6);
     const cseqNum = this.cseq++;
-    // Reuse the exact codec (EVS/16000, payload 116) + fmtp a real iPhone has been
-    // directly confirmed to accept, both as its own offer and inside a working
-    // call — see memory: ims-real-iphone-call-flow. Safer than guessing at a
-    // codec/fmtp combination that's never actually been proven against this phone.
-    const payloadType = '116';
+    // Offer Pixel-native PT 127 EVS/16000 first alongside iPhone-verified PT 116
+    // EVS/16000 and telephone-event (96); handleOutboundResponse locks onto the
+    // callee's chosen PT before any subsequent UPDATE.
+    const payloadType = '127';
     const codecLine = 'EVS/16000';
-    const fmtpLine = 'a=fmtp:116 br=5.9-24.4; bw=nb-swb; max-red=220; mode-set=0,1,2\r\n';
+    const fmtpLine = 'a=fmtp:127 max-red=0; br=9.6-24.4; bw=nb-swb\r\n';
     // RFC 3312 preconditions, mirroring exactly what a real iPhone declares as
     // OFFERER (see memory: ims-real-iphone-call-flow) — "mandatory local" (we
     // require our own confirmation before real media) but only "optional remote"
@@ -502,9 +609,12 @@ class ImsTestNumberInstance {
     const sdpOffer =
       `v=0\r\no=- ${Date.now()} 1 IN IP4 ${this.pcscfIp}\r\ns=echo-test\r\n` +
       `c=IN IP4 ${this.pcscfIp}\r\nt=0 0\r\n` +
-      `m=audio ${localRtpPort} RTP/AVP ${payloadType}\r\n` +
-      `a=rtpmap:${payloadType} ${codecLine}\r\n` +
-      fmtpLine +
+      `m=audio ${localRtpPort} RTP/AVP 127 116 96\r\n` +
+      `a=rtpmap:127 EVS/16000\r\n` +
+      `a=fmtp:127 max-red=0; br=9.6-24.4; bw=nb-swb\r\n` +
+      `a=rtpmap:116 EVS/16000\r\n` +
+      `a=fmtp:116 br=5.9-24.4; bw=nb-swb; max-red=220; mode-set=0,1,2\r\n` +
+      `a=rtpmap:96 telephone-event/16000\r\n` +
       `a=rtcp:${localRtpPort + 1}\r\na=ptime:20\r\n` +
       `a=curr:qos local none\r\na=des:qos mandatory local sendrecv\r\n` +
       `a=curr:qos remote none\r\na=des:qos optional remote sendrecv\r\n` +
@@ -519,7 +629,7 @@ class ImsTestNumberInstance {
       `From: <sip:${this.identity.imsi}@${this.imsDomain}>;tag=${fromTag}\r\n` +
       `Call-ID: ${callId}\r\n` +
       `CSeq: ${cseqNum} INVITE\r\n` +
-      `Contact: <sip:${this.identity.imsi}@${this.pcscfIp}:${this.localPort};transport=udp>\r\n` +
+      this.contactHeader() +
       `Allow: ACK,BYE,CANCEL,INVITE,UPDATE\r\n` +
       // Deliberately NOT advertising `Supported: 100rel` — doing so tells the callee
       // it may send *reliable* provisional responses expecting a PRACK back, which
@@ -584,12 +694,12 @@ class ImsTestNumberInstance {
     await new Promise<void>((resolve, reject) => {
       const onError = (err: Error) => reject(err);
       this.sock.once('error', onError);
-      this.sock.bind(this.localPort, () => { this.sock.removeListener('error', onError); resolve(); });
+      this.sock.bind({ port: this.localPort, address: this.bindHost }, () => { this.sock.removeListener('error', onError); resolve(); });
     });
     await new Promise<void>((resolve, reject) => {
       const onError = (err: Error) => reject(err);
       this.tcpServer.once('error', onError);
-      this.tcpServer.listen(this.localPort, () => { this.tcpServer.removeListener('error', onError); resolve(); });
+      this.tcpServer.listen({ port: this.localPort, host: this.bindHost }, () => { this.tcpServer.removeListener('error', onError); resolve(); });
     });
     // Post-start: a UDP socket can still emit 'error' later (e.g. ICMP
     // port-unreachable from a bad peer) — log-and-continue instead of
@@ -609,6 +719,12 @@ class ImsTestNumberInstance {
 
   async stop(): Promise<void> {
     if (this.refreshTimer) clearInterval(this.refreshTimer);
+    // Best-effort de-registration so removed instances don't leave stale
+    // pcscf.location entries holding NATPING conntrack state open.
+    await Promise.race([
+      this.registerOnce(0),
+      new Promise<void>((resolve) => setTimeout(resolve, 1500)),
+    ]).catch(() => { /* best effort during stop/shutdown */ });
     for (const call of this.activeCalls.values()) {
       try { call.rtpSock.close(); } catch { /* already closed */ }
     }
