@@ -21,7 +21,7 @@ export const BUILD_WORKDIR = '/opt/kamailio-ims-modules-build';
 export const MODULES_DIR = '/usr/lib/x86_64-linux-gnu/kamailio/modules';
 
 // Bump whenever a patch below is added/changed.
-export const PATCH_REV = 3;
+export const PATCH_REV = 4;
 
 // Unique string only present once a file has been patched — used both as the
 // source-level idempotency check (grepped against the .c file mid-build,
@@ -65,6 +65,9 @@ export const IPSEC_MOD_CFLAGS_C_MARKER = 'NMS patch: uint cflags cast';
  *         entirely: applied by hand 2026-08-02, then silently dropped by the
  *         2026-10-03 rebuild, with a stale marker file making IMS Install skip
  *         it forever).
+ * rev 4 — adds SECVERIFY_C_PATCH to Ubuntu module build pipeline (was previously
+ *         only applied in kamailio-source-build.ts; required for Google Pixel
+ *         Tensor/Shannon modems to accept MT calls under IPsec).
  * rev 3 — adds IPSEC_MOD_CFLAGS_C_PATCH (unit_fixup() stores unsigned int* in
  *         _cflags, but w_create/w_forward dereferenced *_cflags as signed char
  *         and sign-extended bit 7 into bits 8..31, forcing
@@ -1031,6 +1034,19 @@ PATCHEOF
   patch -p1 --forward --batch < /tmp/cmd.c.patch
   grep -q "${CMD_C_MARKER}" "$IPSEC_C" || { echo "ERROR: $IPSEC_C patch marker missing after apply -- upstream source may have changed, review manually."; exit 1; }
   echo "  PATCH $IPSEC_C"
+fi
+
+# Same file as CMD_C_PATCH above (ims_ipsec_pcscf/cmd.c), applied second —
+# disjoint regions (ipsec_create() vs ipsec_forward()/add_security_verify_header()).
+if grep -q "${SECVERIFY_C_MARKER}" "$IPSEC_C"; then
+  echo "  ok    $IPSEC_C (already patched for sec-agree)"
+else
+  cat > /tmp/secverify.c.patch <<'PATCHEOF'
+${SECVERIFY_C_PATCH}
+PATCHEOF
+  patch -p1 --forward --batch < /tmp/secverify.c.patch
+  grep -q "${SECVERIFY_C_MARKER}" "$IPSEC_C" || { echo "ERROR: $IPSEC_C sec-agree patch marker missing after apply -- upstream source may have changed, review manually."; exit 1; }
+  echo "  PATCH $IPSEC_C (sec-agree on MT INVITE)"
 fi
 
 if grep -q "${SAVE_C_MARKER}" "$REGISTRAR_C"; then

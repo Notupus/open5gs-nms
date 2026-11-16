@@ -680,7 +680,7 @@ ${p.http2N5Available ? '#!define WITH_N5' : '##!define WITH_N5 // undefined: Kam
 #!define WITH_IPSEC
 #!define WITH_IMS_HDR_CACHE
 #!define WITH_PING_UDP
-#!define WITH_PING_TCP
+// WITH_PING_TCP intentionally disabled: cellular UEs reject inbound TCP SYN pings
 ${captureNodeDefine('pcscf', p.sipTracing === true)}`;
 }
 
