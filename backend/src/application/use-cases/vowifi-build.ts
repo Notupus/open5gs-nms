@@ -30,7 +30,7 @@ export const VECTORCORE_AAA_COMMIT = '7dc609ef5a2128596be5cd692ec08648b159f21b';
 // OSMO_EPDG_PATCH_REV: lets vowifi-controller.ts's buildStale check detect "same
 // upstream commit, but an older deployment is missing a since-added local patch"
 // without forcing a reinstall for unrelated version bumps.
-export const VECTORCORE_PATCH_REV = 7;
+export const VECTORCORE_PATCH_REV = 8;
 export const RUNTIME_BIN_DIR = '/opt/vectorcore';
 export const VECTORCORE_EPDG_CONFIG_DIR = '/etc/vectorcore/epdg';
 export const VECTORCORE_AAA_CONFIG_DIR = '/etc/vectorcore/aaa';
@@ -783,6 +783,121 @@ print("patched dataplane.go")
 PYEOF
 fi
 grep -qF 'func (m *Manager) ulRingbufLoop' internal/gtpu/dataplane.go || { echo "ERROR: dataplane.go ringbuf patch did not apply"; exit 1; }
+
+# FlushAll() previously called netlink.XfrmPolicyFlush() and
+# netlink.XfrmStateFlush(XFRM_PROTO_ESP), which issue global XFRM_MSG_FLUSHPOLICY
+# / XFRM_MSG_FLUSHSA requests wiping ALL kernel IPsec policies and ESP SAs
+# (including Kamailio P-CSCF IMS SAs and strongSwan SeGW SAs where Ifid != IfID).
+# When vectorcore-ePDG restarted or crash-looped, it wiped active VoLTE/VoNR
+# handset SAs every few seconds. Scope FlushAll() strictly to policies and ESP
+# states stamped with vectorcore-ePDG's own Ifid == int(IfID).
+if grep -q 'policies\[i\]\.Ifid == int(IfID)' internal/xfrm/xfrm.go; then
+  echo "xfrm.go already has IfID-scoped FlushAll patch applied — skipping re-patch."
+else
+  grep -q 'netlink.XfrmPolicyFlush()' internal/xfrm/xfrm.go || { echo "ERROR: xfrm.go patch site (XfrmPolicyFlush) not found — upstream source may have changed, review manually"; exit 1; }
+  python3 - <<'PYEOF'
+path = "internal/xfrm/xfrm.go"
+with open(path) as f:
+    src = f.read()
+
+needle = '''// FlushAll removes all ESP XFRM states and policies from the kernel.
+// Called at startup and shutdown to clear stale state from previous runs.
+func FlushAll() error {
+	errP := netlink.XfrmPolicyFlush()
+	errS := netlink.XfrmStateFlush(netlink.XFRM_PROTO_ESP)
+	if errP != nil {
+		return errP
+	}
+	return errS
+}'''
+
+replacement = '''// FlushAll removes all ESP XFRM states and policies tagged with our IfID from the kernel.
+// Called at startup and shutdown to clear stale state from previous runs without
+// disturbing unrelated IPsec subsystems (e.g. Kamailio P-CSCF IMS SAs or strongSwan SeGW).
+func FlushAll() error {
+	var firstErr error
+	if policies, err := netlink.XfrmPolicyList(netlink.FAMILY_ALL); err != nil {
+		firstErr = err
+	} else {
+		for i := range policies {
+			if policies[i].Ifid == int(IfID) {
+				if err := netlink.XfrmPolicyDel(&policies[i]); err != nil && firstErr == nil {
+					firstErr = err
+				}
+			}
+		}
+	}
+	if states, err := netlink.XfrmStateList(netlink.FAMILY_ALL); err != nil {
+		if firstErr == nil {
+			firstErr = err
+		}
+	} else {
+		for i := range states {
+			if states[i].Proto == netlink.XFRM_PROTO_ESP && states[i].Ifid == int(IfID) {
+				if err := netlink.XfrmStateDel(&states[i]); err != nil && firstErr == nil {
+					firstErr = err
+				}
+			}
+		}
+	}
+	return firstErr
+}'''
+
+if needle not in src:
+    raise SystemExit("needle not found in xfrm.go")
+src = src.replace(needle, replacement, 1)
+with open(path, "w") as f:
+    f.write(src)
+print("patched xfrm.go")
+PYEOF
+fi
+grep -qF 'policies[i].Ifid == int(IfID)' internal/xfrm/xfrm.go || { echo "ERROR: xfrm.go FlushAll IfID patch did not apply"; exit 1; }
+
+# Fall back to ifaceForIP(ip4) when a configured xdp_interface (e.g. dummy-epdg
+# in "existing" IP deployments) does not exist, and allow empty xdp_interface in
+# config validation so auto-detection in newBPFDataplane() actually works.
+if grep -q 'autoIface, autoErr := ifaceForIP(ip4)' internal/gtpu/bpf_loader.go; then
+  echo "bpf_loader.go already has ifaceForIP fallback applied — skipping re-patch."
+else
+  grep -q 'nl, err := netlink.LinkByName(iface)' internal/gtpu/bpf_loader.go || { echo "ERROR: bpf_loader.go patch site (LinkByName) not found — upstream source may have changed, review manually"; exit 1; }
+  python3 - <<'PYEOF'
+path = "internal/gtpu/bpf_loader.go"
+with open(path) as f:
+    src = f.read()
+
+needle = '''	nl, err := netlink.LinkByName(iface)
+	if err != nil {
+		return nil, fmt.Errorf("bpf: look up interface %q: %w", iface, err)
+	}'''
+
+replacement = '''	nl, err := netlink.LinkByName(iface)
+	if err != nil {
+		if autoIface, autoErr := ifaceForIP(ip4); autoErr == nil {
+			iface = autoIface
+			nl, err = netlink.LinkByName(iface)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("bpf: look up interface %q: %w", iface, err)
+		}
+	}'''
+
+if needle not in src:
+    raise SystemExit("needle not found in bpf_loader.go")
+src = src.replace(needle, replacement, 1)
+with open(path, "w") as f:
+    f.write(src)
+print("patched bpf_loader.go")
+PYEOF
+fi
+grep -qF 'autoIface, autoErr := ifaceForIP(ip4)' internal/gtpu/bpf_loader.go || { echo "ERROR: bpf_loader.go ifaceForIP fallback patch did not apply"; exit 1; }
+
+if grep -qF 'bpf.xdp_interface' internal/config/validate.go; then
+  sed -i '/require(&errs, c\.GTP\.BPF\.XDPInterface, "bpf\.xdp_interface")/d' internal/config/validate.go
+fi
+if grep -qF 'bpf.xdp_interface' internal/config/validate.go; then
+  echo "ERROR: validate.go bpf.xdp_interface removal patch did not apply"
+  exit 1
+fi
 
 stop_heartbeat
 
