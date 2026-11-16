@@ -790,8 +790,11 @@ function ExternalTrunkCard({ status, onChanged }: { status: PstnStatus | null; o
   const [frrAcknowledged, setFrrAcknowledged] = useState(false);
   const enabled = !!status?.externalTrunkEnabled;
 
+  const initializedRef = useRef(false);
+
   useEffect(() => {
-    if (existing) {
+    if (!initializedRef.current && existing) {
+      initializedRef.current = true;
       setBindIp(existing.bindIp ?? '');
       setBindPort(String(existing.bindPort ?? 5060));
       setInterfaceMode(existing.interfaceMode ?? 'dummy');
