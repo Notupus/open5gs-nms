@@ -70,6 +70,14 @@ export interface PstnExternalTrunkConfig {
   providerHost: string;
   providerPort: number;
   providerCidr: string;
+  authUsername?: string;
+  authPassword?: string;
+  fromUser?: string;
+  fromDomain?: string;
+  register?: boolean;
+  sendPai?: boolean;
+  sendRpid?: boolean;
+  codecs?: string[];
 }
 
 export interface PstnConfigFile {
@@ -129,7 +137,23 @@ export const pstnApi = {
   // from bindIp) — same "optional at the input boundary" shape as every
   // other optional field in this file, distinct from PstnExternalTrunkConfig
   // itself (which always reports the fully-resolved values back from /status).
-  configureExternalTrunk: async (config: { bindIp: string; bindPort: number; interfaceMode: 'dummy' | 'existing'; externalMediaAddress?: string; providerHost: string; providerPort: number; providerCidr?: string }) => {
+  configureExternalTrunk: async (config: {
+    bindIp: string;
+    bindPort: number;
+    interfaceMode: 'dummy' | 'existing';
+    externalMediaAddress?: string;
+    providerHost: string;
+    providerPort: number;
+    providerCidr?: string;
+    authUsername?: string;
+    authPassword?: string;
+    fromUser?: string;
+    fromDomain?: string;
+    register?: boolean;
+    sendPai?: boolean;
+    sendRpid?: boolean;
+    codecs?: string[];
+  }) => {
     const { data } = await api.post('/external-trunk/configure', config); return data;
   },
   enableExternalTrunk:  async () => { const { data } = await api.post('/external-trunk/enable'); return data; },

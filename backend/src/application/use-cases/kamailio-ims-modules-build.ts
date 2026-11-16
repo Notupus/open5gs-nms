@@ -795,38 +795,18 @@ export const CDP_ACCTSM_C_PATCH = String.raw`--- a/src/modules/cdp/acctstatemach
 // pre-existing `add_security_server_header`.
 export const SECVERIFY_C_PATCH = String.raw`--- a/src/modules/ims_ipsec_pcscf/cmd.c
 +++ b/src/modules/ims_ipsec_pcscf/cmd.c
-@@ -100,6 +100,21 @@
+@@ -98,6 +98,7 @@
  #define IPSEC_FORWARD_USEVIA (1 << 8)
  /* if set - try TCP if corresponding UDP socket is not found */
  #define IPSEC_FORWARD_TRYTCP (1 << 9)
-+/* NMS patch, confirmed live 2026-10-01: if set - add Require/Security-Verify
-+ * sec-agree headers (RFC 3329) to a request being forwarded into a UE's
-+ * IPsec tunnel. Upstream only ever adds these on a REGISTER 200 OK reply
-+ * (see the existing block in ipsec_forward() below) -- never on an INVITE,
-+ * in either direction. A real device (confirmed: a Google Pixel 7 running a
-+ * 2026-09 Android build) was found live to require sec-agree confirmation
-+ * on every call-establishing INVITE too, not just REGISTER -- it silently
-+ * rejects (480, no ring, matching a real "no mobile network" dialer error)
-+ * an otherwise completely valid INVITE delivered correctly over its own
-+ * already-established IPsec SA, purely because this confirmation is
-+ * missing. Scoped to its own opt-in flag bit so it only applies where
-+ * explicitly requested (route[MT]'s initial-request ipsec_forward() call)
-+ * -- REGISTER processing, MO-direction forwarding, and in-dialog MT
-+ * requests are all unaffected. */
 +#define IPSEC_FORWARD_ADD_SECVERIFY (1 << 10)
-
+ 
  /* if set - delete unused tunnels before every registration */
  #define IPSEC_CREATE_DELETE_UNUSED_TUNNELS 0x01
-@@ -809,6 +824,50 @@
+@@ -805,6 +806,42 @@
  	return 0;
  }
-
-+// NMS patch, confirmed live 2026-10-01: same parameter syntax as
-+// add_security_server_header() above (3GPP TS 24.229 / RFC 3329 -- the two
-+// headers share an identical grammar, just at different protocol phases),
-+// used to confirm the already-negotiated IPsec SA on a request being
-+// forwarded into it, gated behind IPSEC_FORWARD_ADD_SECVERIFY. See that
-+// flag's own comment for the full rationale.
+ 
 +int add_security_verify_header(struct sip_msg *m, ipsec_t *s)
 +{
 +	str *sec_header = NULL;
@@ -841,8 +821,7 @@ export const SECVERIFY_C_PATCH = String.raw`--- a/src/modules/ims_ipsec_pcscf/cm
 +	sec_header->len = snprintf(sec_hdr_buf, sizeof(sec_hdr_buf) - 1,
 +			"Security-Verify: "
 +			"ipsec-3gpp;q=0.1;prot=esp;mod=trans;spi-c=%d;spi-s=%d;port-c=%d;"
-+			"port-s=%"
-+			"d;alg=%.*s;ealg=%.*s\r\n",
++			"port-s=%d;alg=%.*s;ealg=%.*s\r\n",
 +			s->spi_pc, s->spi_ps, s->port_pc, s->port_ps, s->r_alg.len,
 +			s->r_alg.s, s->r_ealg.len, s->r_ealg.s);
 +
@@ -861,37 +840,25 @@ export const SECVERIFY_C_PATCH = String.raw`--- a/src/modules/ims_ipsec_pcscf/cm
 +	}
 +
 +	pkg_free(sec_header);
-+
 +	return 0;
 +}
 +
  int ipsec_create(struct sip_msg *m, udomain_t *d, int _cflags)
  {
  	pcontact_t *pcontact = NULL;
-@@ -1161,7 +1216,7 @@
- 	if(!(_cflags & IPSEC_NODSTURI_RESET) && (m->dst_uri.s != NULL)) {
- 		LM_DBG("resetting dst uri [%.*s]\n", m->dst_uri.len, m->dst_uri.s);
- 		pkg_free(m->dst_uri.s);
- 		m->dst_uri.s = NULL;
+@@ -1190,7 +1227,7 @@
  		m->dst_uri.len = 0;
  	}
  
 -	if(!(_cflags & IPSEC_NODSTURI_RESET)) {
 +	if(!(_cflags & IPSEC_NODSTURI_RESET) || (m->dst_uri.s == NULL || m->dst_uri.len == 0)) {
  		char buf[1024];
-@@ -1260,6 +1319,25 @@
-
+ 		int buf_len;
+ 		if((_cflags & IPSEC_SETDSTURI_FULL) && (dst_proto == PROTO_TCP)) {
+@@ -1265,6 +1302,16 @@
+ 
  	ret = IPSEC_CMD_SUCCESS; // all good, return SUCCESS
-
-+	// NMS patch, confirmed live 2026-10-01: see IPSEC_FORWARD_ADD_SECVERIFY's
-+	// own comment for the full rationale. Placed before the sibling
-+	// REGISTER-200-OK block below (mirrors its own error-handling shape --
-+	// a failure here still reports the already-set SUCCESS, same as that
-+	// block already does) so a request that needs it gets it regardless of
-+	// anything that block does, and vice versa; the two conditions
-+	// (SIP_REQUEST here, SIP_REPLY there) are mutually exclusive on the
-+	// very first line of this function, so they can never both fire for
-+	// the same message.
+ 
 +	if(m->first_line.type == SIP_REQUEST
 +			&& (_cflags & IPSEC_FORWARD_ADD_SECVERIFY)) {
 +		if(add_require_secagree_header(m) != 0) {

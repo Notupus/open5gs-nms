@@ -3,7 +3,7 @@ import Editor from '@monaco-editor/react';
 import {
   Phone, CheckCircle, XCircle, AlertCircle, RefreshCw,
   Terminal, RotateCw, Settings, Power, BookOpen, ChevronDown, Plus, Trash2, PhoneCall, PhoneIncoming, PhoneOutgoing, FileText, Signal, ArrowRight,
-  Pencil, Check, X,
+  Pencil, Check, X, Key, Shield, Volume2,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
@@ -755,6 +755,17 @@ function CrossRanToggleCard({ status, onChanged }: { status: PstnStatus | null; 
 // unlike the loopback-only Cross-RAN toggle above. Values pre-fill from
 // status.currentConfig?.externalTrunk so re-opening this after a save
 // doesn't require re-typing everything.
+const ALL_TRUNK_CODECS = [
+  { id: 'ulaw', name: 'G.711 u-law', desc: 'Standard PCMU' },
+  { id: 'alaw', name: 'G.711 a-law', desc: 'Standard PCMA' },
+  { id: 'g729', name: 'G.729A', desc: '8 kbps' },
+  { id: 'g722', name: 'G.722', desc: 'HD Voice 16kHz' },
+  { id: 'opus', name: 'Opus', desc: 'Variable rate' },
+  { id: 'amrwb', name: 'AMR-WB', desc: 'VoLTE HD voice' },
+  { id: 'amr', name: 'AMR', desc: 'VoLTE narrowband' },
+  { id: 'gsm', name: 'GSM-FR', desc: '2G 13kbps' },
+];
+
 function ExternalTrunkCard({ status, onChanged }: { status: PstnStatus | null; onChanged: () => void }) {
   const existing = status?.currentConfig?.externalTrunk;
   const [bindIp, setBindIp] = useState(existing?.bindIp ?? '');
@@ -764,10 +775,42 @@ function ExternalTrunkCard({ status, onChanged }: { status: PstnStatus | null; o
   const [providerHost, setProviderHost] = useState(existing?.providerHost ?? '');
   const [providerPort, setProviderPort] = useState(String(existing?.providerPort ?? 5060));
   const [providerCidr, setProviderCidr] = useState(existing?.providerCidr ?? '');
+  const [authUsername, setAuthUsername] = useState(existing?.authUsername ?? '');
+  const [authPassword, setAuthPassword] = useState(existing?.authPassword ?? '');
+  const [fromUser, setFromUser] = useState(existing?.fromUser ?? '');
+  const [fromDomain, setFromDomain] = useState(existing?.fromDomain ?? '');
+  const [register, setRegister] = useState(existing?.register ?? false);
+  const [sendPai, setSendPai] = useState(existing?.sendPai ?? false);
+  const [sendRpid, setSendRpid] = useState(existing?.sendRpid ?? false);
+  const [selectedCodecs, setSelectedCodecs] = useState<string[]>(
+    existing?.codecs && existing.codecs.length > 0 ? existing.codecs : ['ulaw', 'alaw']
+  );
   const [saving, setSaving] = useState(false);
   const [toggling, setToggling] = useState(false);
   const [frrAcknowledged, setFrrAcknowledged] = useState(false);
   const enabled = !!status?.externalTrunkEnabled;
+
+  useEffect(() => {
+    if (existing) {
+      setBindIp(existing.bindIp ?? '');
+      setBindPort(String(existing.bindPort ?? 5060));
+      setInterfaceMode(existing.interfaceMode ?? 'dummy');
+      setExternalMediaAddress(existing.externalMediaAddress ?? '');
+      setProviderHost(existing.providerHost ?? '');
+      setProviderPort(String(existing.providerPort ?? 5060));
+      setProviderCidr(existing.providerCidr ?? '');
+      setAuthUsername(existing.authUsername ?? '');
+      setAuthPassword(existing.authPassword ?? '');
+      setFromUser(existing.fromUser ?? '');
+      setFromDomain(existing.fromDomain ?? '');
+      setRegister(!!existing.register);
+      setSendPai(!!existing.sendPai);
+      setSendRpid(!!existing.sendRpid);
+      if (existing.codecs && existing.codecs.length > 0) {
+        setSelectedCodecs(existing.codecs);
+      }
+    }
+  }, [existing]);
 
   // Same shape as SecGW's own needsFrrAck: prompt on first-ever configure,
   // and again any time the bind IP itself changes (a different address may
@@ -783,6 +826,20 @@ function ExternalTrunkCard({ status, onChanged }: { status: PstnStatus | null; o
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const toggleCodec = (codecId: string) => {
+    setSelectedCodecs(prev => {
+      if (prev.includes(codecId)) {
+        if (prev.length <= 1) {
+          toast.error('At least one codec must remain selected');
+          return prev;
+        }
+        return prev.filter(c => c !== codecId);
+      } else {
+        return [...prev, codecId];
+      }
+    });
+  };
+
   const handleConfigure = async () => {
     if (!bindIp || !providerHost) return;
     setSaving(true);
@@ -792,6 +849,14 @@ function ExternalTrunkCard({ status, onChanged }: { status: PstnStatus | null; o
         externalMediaAddress: externalMediaAddress || undefined,
         providerHost, providerPort: Number(providerPort) || 5060,
         providerCidr: providerCidr || undefined,
+        authUsername: authUsername.trim() || undefined,
+        authPassword: authPassword || undefined,
+        fromUser: fromUser.trim() || undefined,
+        fromDomain: fromDomain.trim() || undefined,
+        register,
+        sendPai,
+        sendRpid,
+        codecs: selectedCodecs,
       });
       toast.success('External trunk configured');
       setFrrAcknowledged(false);
@@ -910,6 +975,94 @@ function ExternalTrunkCard({ status, onChanged }: { status: PstnStatus | null; o
           <p className="text-xs text-nms-text-dim mt-1">Widen to a real CIDR block if the provider sends from a range</p>
         </div>
       </div>
+
+      {/* Authentication & Registration Section */}
+      <div className="border-t border-nms-border pt-4 mb-4">
+        <h3 className="text-xs font-semibold text-nms-text flex items-center gap-1.5 mb-2">
+          <Key className="w-3.5 h-3.5 text-nms-accent" /> Authentication & Registration (Optional)
+        </h3>
+        <p className="text-xs text-nms-text-dim mb-3">
+          Configure SIP digest credentials if your provider authenticates outbound calls or requires registration.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-3">
+          <div>
+            <label className="nms-label">Username</label>
+            <input aria-label="Username" value={authUsername} onChange={e => setAuthUsername(e.target.value)}
+              placeholder="e.g. 10001" className="nms-input font-mono text-xs mt-1" />
+          </div>
+          <div>
+            <label className="nms-label">Password</label>
+            <input aria-label="Password" type="password" value={authPassword} onChange={e => setAuthPassword(e.target.value)}
+              placeholder="••••••••" className="nms-input font-mono text-xs mt-1" />
+          </div>
+          <div>
+            <label className="nms-label">From User <span className="text-nms-text-dim font-normal">(optional)</span></label>
+            <input aria-label="From User" value={fromUser} onChange={e => setFromUser(e.target.value)}
+              placeholder="defaults to Username" className="nms-input font-mono text-xs mt-1" />
+          </div>
+          <div>
+            <label className="nms-label">From Domain <span className="text-nms-text-dim font-normal">(optional)</span></label>
+            <input aria-label="From Domain" value={fromDomain} onChange={e => setFromDomain(e.target.value)}
+              placeholder="defaults to Provider Host" className="nms-input font-mono text-xs mt-1" />
+          </div>
+        </div>
+        <label className="flex items-center gap-2 text-xs text-nms-text cursor-pointer">
+          <input type="checkbox" checked={register} onChange={e => setRegister(e.target.checked)} className="rounded border-nms-border" />
+          <span>Enable Outbound SIP Registration (<span className="font-mono text-nms-accent text-[11px]">type=registration</span>)</span>
+        </label>
+      </div>
+
+      {/* Caller ID & Identity Headers (PAI / RPID) */}
+      <div className="border-t border-nms-border pt-4 mb-4">
+        <h3 className="text-xs font-semibold text-nms-text flex items-center gap-1.5 mb-2">
+          <Shield className="w-3.5 h-3.5 text-nms-accent" /> Caller ID & Identity Headers
+        </h3>
+        <p className="text-xs text-nms-text-dim mb-3">
+          Select which caller identification headers Asterisk generates when sending calls out this trunk.
+        </p>
+        <div className="flex flex-wrap gap-6 text-xs text-nms-text">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" checked={sendPai} onChange={e => setSendPai(e.target.checked)} className="rounded border-nms-border" />
+            <span>Send <span className="font-mono text-nms-accent">P-Asserted-Identity</span> (PAI)</span>
+          </label>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" checked={sendRpid} onChange={e => setSendRpid(e.target.checked)} className="rounded border-nms-border" />
+            <span>Send <span className="font-mono text-nms-accent">Remote-Party-ID</span> (RPID)</span>
+          </label>
+        </div>
+      </div>
+
+      {/* Codec Selection */}
+      <div className="border-t border-nms-border pt-4 mb-4">
+        <h3 className="text-xs font-semibold text-nms-text flex items-center gap-1.5 mb-2">
+          <Volume2 className="w-3.5 h-3.5 text-nms-accent" /> Audio Codecs
+        </h3>
+        <p className="text-xs text-nms-text-dim mb-3">
+          Select allowed audio codecs for negotiating media with the external trunk. Active codecs are highlighted.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {ALL_TRUNK_CODECS.map(c => {
+            const isSelected = selectedCodecs.includes(c.id);
+            return (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => toggleCodec(c.id)}
+                className={clsx(
+                  'flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs border transition-all',
+                  isSelected
+                    ? 'bg-nms-accent/15 text-nms-accent border-nms-accent/30 font-medium'
+                    : 'bg-nms-surface-2 text-nms-text-dim border-nms-border hover:text-nms-text'
+                )}
+              >
+                <span>{c.name}</span>
+                <span className="text-[10px] opacity-75">({c.desc})</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       <button onClick={handleConfigure} disabled={saving || !bindIp || !providerHost || (needsFrrAck && !frrAcknowledged)} className="nms-btn-primary flex items-center gap-2 text-sm">
         <Settings className="w-4 h-4" /> {saving ? 'Saving…' : 'Configure'}
       </button>
