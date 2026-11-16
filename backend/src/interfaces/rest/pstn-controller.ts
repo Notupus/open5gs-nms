@@ -595,7 +595,7 @@ asymmetric_rtp_codec=no
 ; hope that reusing the already-negotiated codec identity avoids Asterisk
 ; re-deriving its own independent (and differently-numbered) offer for the
 ; same format. Unverified — reverify PSTN Gateway audio after this lands.
-codec_prefs_outgoing_offer=prefer:pending,operation:intersect,keep:all,transcode:allow
+codec_prefs_outgoing_offer=prefer:local,operation:intersect,keep:all,transcode:allow
 ; Real bug, root-caused live 2026-10-18: outbound UE->PSTN calls had audio ONLY
 ; in the UE->PSTN direction. The media path was entirely healthy (rtpengine
 ; confirmed/kernelized, endpoint == advertised endpoint, errors 0, packet counts
