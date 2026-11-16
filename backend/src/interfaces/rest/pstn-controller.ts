@@ -341,6 +341,7 @@ interface PstnCoreWiring {
   icscfPort: number;
   scscfIp: string;
   mediaIp: string;
+  imsDomain?: string;
 }
 interface PstnPeers {
   crossRan: { ip: string; port: number } | null;
@@ -534,7 +535,9 @@ transport=transport-trunk
 direct_media=no
 dtmf_mode=auto
 trust_id_inbound=yes
-; Real bug found live (2026-08-15): confirmed via raw packet capture that a
+trust_id_outbound=yes
+send_pai=yes
+${core.imsDomain ? `from_domain=${core.imsDomain}\n` : ''}; Real bug found live (2026-08-15): confirmed via raw packet capture that a
 ; PSTN Gateway call's two independent dialogs (caller<->Asterisk, Asterisk
 ; <->callee) each negotiate their OWN dynamic RTP payload-type numbers for
 ; the same codec (e.g. one leg negotiates AMR as payload type 97, the other
@@ -737,6 +740,8 @@ exten => ${echoTestNumber},1,NoOp(PSTN Gateway Echo Test)
     // variant (in case something dials in genuine E.164 form instead). Both
     // point at the same subscriber, so either dialing convention works.
     const body = `1,NoOp(PSTN Gateway: routing to subscriber ${e.subscriberImsi}${e.label ? ' (' + e.label + ')' : ''})
+ same => n,Set(PJSIP_HEADER(add,Accept-Contact)=*;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";audio)
+ same => n,Set(PJSIP_HEADER(add,P-Preferred-Service)=urn:urn-7:3gpp-service.ims.icsi.mmtel)
  same => n,Dial(PJSIP/${e.subscriberImsi}@scscf_trunk,60)
  same => n,Hangup()
 `;
@@ -865,8 +870,11 @@ exten => _X.,1,NoOp(PSTN Gateway: unmatched digits \${EXTEN} - checking external
     // scscf_trunk (4G/IMS) branch -- that path calls Dial() fast enough on
     // its own and has shown no sign of this problem.
     const ringing = e.gsm ? ' same => n,Ringing()\n' : '';
+    const mmtelHeaders = !e.gsm ? ` same => n,Set(PJSIP_HEADER(add,Accept-Contact)=*;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";audio)
+ same => n,Set(PJSIP_HEADER(add,P-Preferred-Service)=urn:urn-7:3gpp-service.ims.icsi.mmtel)
+` : '';
     const body = `1,NoOp(Inbound DID -> subscriber ${e.subscriberImsi}${e.gsm ? ' via 2G' : ''})
-${ringing} same => n,Dial(PJSIP/${target},60)
+${ringing}${mmtelHeaders} same => n,Dial(PJSIP/${target},60)
  same => n,Hangup()
 `;
     return `exten => ${e.did},${body}\nexten => +${e.did},${body}`;
@@ -1383,6 +1391,7 @@ export async function configurePstn(
       fs.writeFileSync(HOST_PJSIP_INC, pjsipPstnConf(asteriskIp, {
         icscfIp: imsState.config.icscfIp, icscfPort: imsState.config.icscfPort,
         scscfIp: imsState.config.scscfIp, mediaIp: imsState.config.pcscfIp,
+        imsDomain: imsState.imsDomain,
       }, { crossRan: crossRanPeer, external: externalTrunk }), 'utf-8');
       if (externalTrunk?.enabled) await applyExternalTrunkFirewall(hostExecutor, { bindIp: externalTrunk.bindIp, bindPort: externalTrunk.bindPort, providerCidr: externalTrunk.providerCidr });
       await ensureStrictRtpDisabled();
@@ -1514,6 +1523,7 @@ export async function setCrossRanCalling(
     fs.writeFileSync(HOST_PJSIP_INC, pjsipPstnConf(existing.asteriskIp, {
       icscfIp: imsState.config.icscfIp, icscfPort: imsState.config.icscfPort,
       scscfIp: imsState.config.scscfIp, mediaIp: imsState.config.pcscfIp,
+      imsDomain: imsState.imsDomain,
     }, { crossRan: asterisk2gPeer, external: existing.externalTrunk ?? null }), 'utf-8');
     await regenerateDialplan(mongoUri, subscriberRepo, existing.echoTestNumber);
     await nsenter('asterisk', ['-rx', 'module reload res_pjsip.so']).catch(() => {});
@@ -1558,6 +1568,7 @@ export async function applyExternalTrunkChange(mongoUri: string, subscriberRepo:
   fs.writeFileSync(HOST_PJSIP_INC, pjsipPstnConf(state.asteriskIp, {
     icscfIp: imsState.config.icscfIp, icscfPort: imsState.config.icscfPort,
     scscfIp: imsState.config.scscfIp, mediaIp: imsState.config.pcscfIp,
+    imsDomain: imsState.imsDomain,
   }, { crossRan: crossRanPeer, external: state.externalTrunk ?? null }), 'utf-8');
   await regenerateDialplan(mongoUri, subscriberRepo, state.echoTestNumber);
   // A plain `module reload res_pjsip.so` does NOT rebind an existing
