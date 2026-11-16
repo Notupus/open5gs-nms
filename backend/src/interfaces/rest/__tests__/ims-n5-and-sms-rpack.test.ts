@@ -11,6 +11,10 @@ import * as path from 'path';
 //    bleed into subsequent MT SMS-DELIVER sends.
 
 const SRC = path.resolve(__dirname, '../../..');
+const PCSCF_TPL = fs.readFileSync(
+  path.join(SRC, 'config/ims-templates/kamailio_pcscf/kamailio_pcscf.cfg'),
+  'utf-8',
+);
 const MO_TPL = fs.readFileSync(
   path.join(SRC, 'config/ims-templates/kamailio_pcscf/route/mo.cfg'),
   'utf-8',
@@ -50,6 +54,29 @@ describe('P-CSCF N5 async entry and per-leg dedup scoping', () => {
       const nextRoute = MT_TPL.indexOf('\nroute[', start + routeName.length);
       const body = nextRoute > -1 ? MT_TPL.slice(start, nextRoute) : MT_TPL.slice(start);
       expect(body).toMatch(/\$avp\(n5_async_entry\)\s*=\s*1;\s*route\(MT_N5_CALL_PCF_POLICY_AUTH\);/);
+    }
+  });
+
+  it('defines rtp_manage_lock and rtp_answer_dedup htables outside WITH_N5', () => {
+    // In the modparam section, rtp_manage_lock and rtp_answer_dedup must be defined
+    // before the N5 modparam block so they are available on non-N5 (5.8.8) builds.
+    const n5ModparamIndex = PCSCF_TPL.indexOf('modparam("htable", "htable", "ue_ip_to_reg_app_session_map');
+    expect(n5ModparamIndex).toBeGreaterThan(-1);
+
+    const rtpManageLockIndex = PCSCF_TPL.indexOf('modparam("htable", "htable", "rtp_manage_lock=>');
+    const rtpAnswerDedupIndex = PCSCF_TPL.indexOf('modparam("htable", "htable", "rtp_answer_dedup=>');
+
+    expect(rtpManageLockIndex).toBeGreaterThan(-1);
+    expect(rtpAnswerDedupIndex).toBeGreaterThan(-1);
+    expect(rtpManageLockIndex).toBeLessThan(n5ModparamIndex);
+    expect(rtpAnswerDedupIndex).toBeLessThan(n5ModparamIndex);
+  });
+
+  it('does not terminate call when Rx AAR fails in MO or MT routes', () => {
+    for (const [tplName, tpl] of [['mo.cfg', MO_TPL], ['mt.cfg', MT_TPL]]) {
+      // Must not contain uncommented dlg_terminate with "Sorry no QoS available"
+      const uncommentedMatches = tpl.match(/^\s*dlg_terminate\("all",\s*"Sorry no QoS available"\)/gm);
+      expect(uncommentedMatches).toBeNull();
     }
   });
 });
