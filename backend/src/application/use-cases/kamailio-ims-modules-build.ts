@@ -21,7 +21,7 @@ export const BUILD_WORKDIR = '/opt/kamailio-ims-modules-build';
 export const MODULES_DIR = '/usr/lib/x86_64-linux-gnu/kamailio/modules';
 
 // Bump whenever a patch below is added/changed.
-export const PATCH_REV = 4;
+export const PATCH_REV = 5;
 
 // Unique string only present once a file has been patched — used both as the
 // source-level idempotency check (grepped against the .c file mid-build,
@@ -39,6 +39,7 @@ export const CDP_COMMON_C_MARKER = 'NMS patch 2026-10-01';
 export const CDP_ACCTSM_C_MARKER = 'NMS patch 2026-10-01';
 export const SECVERIFY_C_MARKER = 'IPSEC_FORWARD_ADD_SECVERIFY';
 export const CDP_MOD_C_MARKER = 'NMS patch: cdp process slot';
+export const DLIST_C_MARKER = 'security_t *sec = c->security ? c->security : c->security_temp;';
 export const IPSEC_MOD_CFLAGS_C_MARKER = 'NMS patch: uint cflags cast';
 
 /**
@@ -73,7 +74,7 @@ export const IPSEC_MOD_CFLAGS_C_MARKER = 'NMS patch: uint cflags cast';
  *         and sign-extended bit 7 into bits 8..31, forcing
  *         IPSEC_FORWARD_ADD_SECVERIFY (1024) on even when flags=897 (0x381)).
  */
-export const KAMAILIO_PATCH_REV = 3;
+export const KAMAILIO_PATCH_REV = 5;
 
 // Real bug, fixed live 2026-08-02 and nearly lost again 2026-10-03: stock
 // cdp_mod.c registers one fewer process slot than the module actually forks
@@ -867,6 +868,17 @@ export const SECVERIFY_C_PATCH = String.raw`--- a/src/modules/ims_ipsec_pcscf/cm
  int ipsec_create(struct sip_msg *m, udomain_t *d, int _cflags)
  {
  	pcontact_t *pcontact = NULL;
+@@ -1161,7 +1216,7 @@
+ 	if(!(_cflags & IPSEC_NODSTURI_RESET) && (m->dst_uri.s != NULL)) {
+ 		LM_DBG("resetting dst uri [%.*s]\n", m->dst_uri.len, m->dst_uri.s);
+ 		pkg_free(m->dst_uri.s);
+ 		m->dst_uri.s = NULL;
+ 		m->dst_uri.len = 0;
+ 	}
+ 
+-	if(!(_cflags & IPSEC_NODSTURI_RESET)) {
++	if(!(_cflags & IPSEC_NODSTURI_RESET) || (m->dst_uri.s == NULL || m->dst_uri.len == 0)) {
+ 		char buf[1024];
 @@ -1260,6 +1319,25 @@
 
  	ret = IPSEC_CMD_SUCCESS; // all good, return SUCCESS
@@ -894,6 +906,114 @@ export const SECVERIFY_C_PATCH = String.raw`--- a/src/modules/ims_ipsec_pcscf/cm
  			&& m->first_line.u.reply.statuscode == 200
  			&& req->first_line.u.request.method_value == METHOD_REGISTER) {
 `;
+
+
+export const DLIST_C_PATCH = String.raw`--- a/src/modules/ims_usrloc_pcscf/dlist.c
++++ b/src/modules/ims_usrloc_pcscf/dlist.c
+@@ -138,10 +138,11 @@
+ 			for(c = p->d->table[i].first; c != NULL; c = c->next) {
+-				if(c->received_host.s && c->security_temp
+-						&& c->security_temp->type == SECURITY_IPSEC) {
++				security_t *sec = c->security ? c->security : c->security_temp;
++				if(c->received_host.s && sec
++						&& sec->type == SECURITY_IPSEC) {
+ 					needed = (int)(sizeof(c->received_host.len)
+ 								   + c->received_host.len
+ 								   + sizeof(
+-										   c->security_temp->data.ipsec->spi_uc)
++										   sec->data.ipsec->spi_uc)
+ 								   + sizeof(
+-										   c->security_temp->data.ipsec->spi_us)
++										   sec->data.ipsec->spi_us)
+ 								   + sizeof(
+-										   c->security_temp->data.ipsec->spi_pc)
++										   sec->data.ipsec->spi_pc)
+ 								   + sizeof(
+-										   c->security_temp->data.ipsec->spi_ps)
++										   sec->data.ipsec->spi_ps)
+ 								   + sizeof(
+-										   c->security_temp->data.ipsec->port_uc)
++										   sec->data.ipsec->port_uc)
+ 								   + sizeof(
+-										   c->security_temp->data.ipsec->port_us)
++										   sec->data.ipsec->port_us)
+ 								   + sizeof(
+-										   c->security_temp->data.ipsec->port_pc)
++										   sec->data.ipsec->port_pc)
+ 								   + sizeof(
+-										   c->security_temp->data.ipsec->port_ps));
++										   sec->data.ipsec->port_ps));
+ 
+ 					if(len >= needed) {
+ 						memcpy(cp, &c->received_host.len,
+@@ -166,42 +167,42 @@
+ 						memcpy(cp, c->received_host.s, c->received_host.len);
+ 						cp = (char *)cp + c->received_host.len;
+ 
+-						memcpy(cp, &c->security_temp->data.ipsec->spi_uc,
+-								sizeof(c->security_temp->data.ipsec->spi_uc));
++						memcpy(cp, &sec->data.ipsec->spi_uc,
++								sizeof(sec->data.ipsec->spi_uc));
+ 						cp = (char *)cp
+-							 + sizeof(c->security_temp->data.ipsec->spi_uc);
++							 + sizeof(sec->data.ipsec->spi_uc);
+ 
+-						memcpy(cp, &c->security_temp->data.ipsec->spi_us,
+-								sizeof(c->security_temp->data.ipsec->spi_us));
++						memcpy(cp, &sec->data.ipsec->spi_us,
++								sizeof(sec->data.ipsec->spi_us));
+ 						cp = (char *)cp
+-							 + sizeof(c->security_temp->data.ipsec->spi_us);
++							 + sizeof(sec->data.ipsec->spi_us);
+ 
+-						memcpy(cp, &c->security_temp->data.ipsec->spi_pc,
+-								sizeof(c->security_temp->data.ipsec->spi_pc));
++						memcpy(cp, &sec->data.ipsec->spi_pc,
++								sizeof(sec->data.ipsec->spi_pc));
+ 						cp = (char *)cp
+-							 + sizeof(c->security_temp->data.ipsec->spi_pc);
++							 + sizeof(sec->data.ipsec->spi_pc);
+ 
+-						memcpy(cp, &c->security_temp->data.ipsec->spi_ps,
+-								sizeof(c->security_temp->data.ipsec->spi_ps));
++						memcpy(cp, &sec->data.ipsec->spi_ps,
++								sizeof(sec->data.ipsec->spi_ps));
+ 						cp = (char *)cp
+-							 + sizeof(c->security_temp->data.ipsec->spi_ps);
++							 + sizeof(sec->data.ipsec->spi_ps);
+ 
+-						memcpy(cp, &c->security_temp->data.ipsec->port_uc,
+-								sizeof(c->security_temp->data.ipsec->port_uc));
++						memcpy(cp, &sec->data.ipsec->port_uc,
++								sizeof(sec->data.ipsec->port_uc));
+ 						cp = (char *)cp
+-							 + sizeof(c->security_temp->data.ipsec->port_uc);
++							 + sizeof(sec->data.ipsec->port_uc);
+ 
+-						memcpy(cp, &c->security_temp->data.ipsec->port_us,
+-								sizeof(c->security_temp->data.ipsec->port_us));
++						memcpy(cp, &sec->data.ipsec->port_us,
++								sizeof(sec->data.ipsec->port_us));
+ 						cp = (char *)cp
+-							 + sizeof(c->security_temp->data.ipsec->port_us);
++							 + sizeof(sec->data.ipsec->port_us);
+ 
+-						memcpy(cp, &c->security_temp->data.ipsec->port_pc,
+-								sizeof(c->security_temp->data.ipsec->port_pc));
++						memcpy(cp, &sec->data.ipsec->port_pc,
++								sizeof(sec->data.ipsec->port_pc));
+ 						cp = (char *)cp
+-							 + sizeof(c->security_temp->data.ipsec->port_pc);
++							 + sizeof(sec->data.ipsec->port_pc);
+ 
+-						memcpy(cp, &c->security_temp->data.ipsec->port_ps,
+-								sizeof(c->security_temp->data.ipsec->port_ps));
++						memcpy(cp, &sec->data.ipsec->port_ps,
++								sizeof(sec->data.ipsec->port_ps));
+ 						cp = (char *)cp
+-							 + sizeof(c->security_temp->data.ipsec->port_ps);
++							 + sizeof(sec->data.ipsec->port_ps);
+ `;
 
 export const IMS_MODULES_BUILD_STEPS = [
   'preparing', 'installing_apt_deps', 'fetching_source', 'patching', 'building', 'verifying_abi', 'deploying',
@@ -1013,6 +1133,7 @@ echo "==STEP:patching=="
 IPSEC_C=src/modules/ims_ipsec_pcscf/cmd.c
 IPSEC_MOD_C=src/modules/ims_ipsec_pcscf/ims_ipsec_pcscf_mod.c
 REGISTRAR_C=src/modules/ims_registrar_pcscf/save.c
+USRLOC_DLIST_C=src/modules/ims_usrloc_pcscf/dlist.c
 
 if grep -q "${IPSEC_MOD_CFLAGS_C_MARKER}" "$IPSEC_MOD_C"; then
   echo "  ok    $IPSEC_MOD_C (already patched)"
@@ -1085,20 +1206,35 @@ PATCHEOF
   echo "  PATCH $IMS_RO_C"
 fi
 
+
+if grep -q "${DLIST_C_MARKER}" "$USRLOC_DLIST_C"; then
+  echo "  ok    $USRLOC_DLIST_C (already patched)"
+else
+  cat > /tmp/dlist.c.patch <<'PATCHEOF'
+${DLIST_C_PATCH}
+PATCHEOF
+  patch -p1 --forward --batch < /tmp/dlist.c.patch
+  grep -q "${DLIST_C_MARKER}" "$USRLOC_DLIST_C" || { echo "ERROR: $USRLOC_DLIST_C patch marker missing after apply -- upstream source may have changed, review manually."; exit 1; }
+  echo "  PATCH $USRLOC_DLIST_C"
+fi
+
 echo "==STEP:building=="
 start_heartbeat
 make modules modules=src/modules/ims_ipsec_pcscf
 make modules modules=src/modules/ims_registrar_pcscf
 make modules modules=src/modules/ims_charging
+make modules modules=src/modules/ims_usrloc_pcscf
 stop_heartbeat
 echo ${PATCH_REV} > "$PATCH_REV_FILE"
 
 NEW_IPSEC_SO="$(pwd)/src/modules/ims_ipsec_pcscf/ims_ipsec_pcscf.so"
 NEW_REGISTRAR_SO="$(pwd)/src/modules/ims_registrar_pcscf/ims_registrar_pcscf.so"
 NEW_CHARGING_SO="$(pwd)/src/modules/ims_charging/ims_charging.so"
+NEW_USRLOC_SO="$(pwd)/src/modules/ims_usrloc_pcscf/ims_usrloc_pcscf.so"
 test -f "$NEW_IPSEC_SO" || { echo "ERROR: build did not produce $NEW_IPSEC_SO"; exit 1; }
 test -f "$NEW_REGISTRAR_SO" || { echo "ERROR: build did not produce $NEW_REGISTRAR_SO"; exit 1; }
 test -f "$NEW_CHARGING_SO" || { echo "ERROR: build did not produce $NEW_CHARGING_SO"; exit 1; }
+test -f "$NEW_USRLOC_SO" || { echo "ERROR: build did not produce $NEW_USRLOC_SO"; exit 1; }
 
 echo "==STEP:verifying_abi=="
 # Confirmed-live discipline from the original manual patch: a bad build could
@@ -1106,7 +1242,7 @@ echo "==STEP:verifying_abi=="
 # what kamailio's module loader expects -- diffing the dynamic symbol table
 # against the currently-loaded module (patched or original, whichever is
 # live right now) catches that before it ever reaches a running service.
-for pair in "$IPSEC_SO:$NEW_IPSEC_SO:ims_ipsec_pcscf" "$REGISTRAR_SO:$NEW_REGISTRAR_SO:ims_registrar_pcscf" "$CHARGING_SO:$NEW_CHARGING_SO:ims_charging"; do
+for pair in "$IPSEC_SO:$NEW_IPSEC_SO:ims_ipsec_pcscf" "$REGISTRAR_SO:$NEW_REGISTRAR_SO:ims_registrar_pcscf" "$CHARGING_SO:$NEW_CHARGING_SO:ims_charging" "${MODULES_DIR}/ims_usrloc_pcscf.so:$NEW_USRLOC_SO:ims_usrloc_pcscf"; do
   OLD="\${pair%%:*}"; rest="\${pair#*:}"; NEW="\${rest%%:*}"; NAME="\${rest##*:}"
   nm -D --defined-only "$OLD" 2>/dev/null | awk '{print $NF}' | sort > /tmp/"$NAME".old.symbols
   nm -D --defined-only "$NEW" 2>/dev/null | awk '{print $NF}' | sort > /tmp/"$NAME".new.symbols
@@ -1127,7 +1263,8 @@ echo "==STEP:deploying=="
 cp "$NEW_IPSEC_SO" "$IPSEC_SO.new" && mv "$IPSEC_SO.new" "$IPSEC_SO"
 cp "$NEW_REGISTRAR_SO" "$REGISTRAR_SO.new" && mv "$REGISTRAR_SO.new" "$REGISTRAR_SO"
 cp "$NEW_CHARGING_SO" "$CHARGING_SO.new" && mv "$CHARGING_SO.new" "$CHARGING_SO"
-chmod 644 "$IPSEC_SO" "$REGISTRAR_SO" "$CHARGING_SO"
+cp "$NEW_USRLOC_SO" "${MODULES_DIR}/ims_usrloc_pcscf.so.new" && mv "${MODULES_DIR}/ims_usrloc_pcscf.so.new" "${MODULES_DIR}/ims_usrloc_pcscf.so"
+chmod 644 "$IPSEC_SO" "$REGISTRAR_SO" "$CHARGING_SO" "${MODULES_DIR}/ims_usrloc_pcscf.so"
 echo "deployed: $IPSEC_SO"
 echo "deployed: $REGISTRAR_SO"
 echo "deployed: $CHARGING_SO"

@@ -596,7 +596,7 @@ listen=tcp:${p.pcscfIp}:${p.pcscfPort}
 #!define IPSEC_CLIENT_PORT 5100
 #!define IPSEC_SERVER_PORT 6100
 #!define IPSEC_MAX_CONN 10
-#!define IPSEC_DELETE_UNUSED_TUNNELS 1
+#!define IPSEC_DELETE_UNUSED_TUNNELS 0
 // IPSEC_FORWARD_FLAGS: 993 (0x3E1) = 897 | IPSEC_NODSTURI_RESET (32) | IPSEC_TCPPORT_UEC (64).
 // Essential for TCP/TLS UEs (e.g. 5G SA Android UEs like Google Pixel):
 // - IPSEC_NODSTURI_RESET (32) preserves the active TCP connection alias (m->dst_uri)

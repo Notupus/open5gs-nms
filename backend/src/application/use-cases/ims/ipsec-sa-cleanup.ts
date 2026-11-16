@@ -40,7 +40,7 @@ interface XfrmSa {
 function pcscfIp(): string | null {
   try {
     const state = JSON.parse(require('fs').readFileSync('/proc/1/root/etc/open5gs/.ims-config.json', 'utf-8'));
-    return state?.pcscfIp ?? null;
+    return state?.config?.pcscfIp ?? state?.pcscfIp ?? null;
   } catch {
     return null;
   }
