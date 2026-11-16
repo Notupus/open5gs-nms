@@ -597,7 +597,13 @@ listen=tcp:${p.pcscfIp}:${p.pcscfPort}
 #!define IPSEC_SERVER_PORT 6100
 #!define IPSEC_MAX_CONN 10
 #!define IPSEC_DELETE_UNUSED_TUNNELS 1
-#!define IPSEC_FORWARD_FLAGS 897
+// IPSEC_FORWARD_FLAGS: 993 (0x3E1) = 897 | IPSEC_NODSTURI_RESET (32) | IPSEC_TCPPORT_UEC (64).
+// Essential for TCP/TLS UEs (e.g. 5G SA Android UEs like Google Pixel):
+// - IPSEC_NODSTURI_RESET (32) preserves the active TCP connection alias (m->dst_uri)
+//   rather than resetting it and attempting a new inbound TCP connection to the phone.
+// - IPSEC_TCPPORT_UEC (64) targets the UE client port from P-CSCF server port (6101),
+//   reusing the established TCP stream where the UE is listening.
+#!define IPSEC_FORWARD_FLAGS 993
 // NMS patch, confirmed live 2026-10-01 (critic-caught before deploy): the C-level
 // IPSEC_FORWARD_ADD_SECVERIFY (1<<10) added to ims_ipsec_pcscf/cmd.c lives in a
 // completely separate namespace from this .cfg preprocessor -- referencing it from
