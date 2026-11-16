@@ -536,6 +536,23 @@ class ImsTestNumberInstance {
         call.payloadType = '127';
         call.codecLine = 'EVS/16000';
         call.fmtpLine = 'a=fmtp:127 max-red=0; br=9.6-24.4; bw=nb-swb\r\n';
+      } else if (pickedPt === '104') {
+        call.payloadType = '104';
+        call.codecLine = 'AMR-WB/16000/1';
+        call.fmtpLine = 'a=fmtp:104 mode-change-capability=2;max-red=0\r\n';
+      } else if (pickedPt === '102') {
+        call.payloadType = '102';
+        call.codecLine = 'AMR/8000/1';
+        call.fmtpLine = 'a=fmtp:102 mode-change-capability=2;max-red=0\r\n';
+      } else if (pickedPt) {
+        // Fallback: match whatever the callee selected from our offer
+        const rtpMatch = new RegExp(`a=rtpmap:${pickedPt} (\\S+)`, 'i').exec(parsed.body);
+        if (rtpMatch) {
+          call.payloadType = pickedPt;
+          call.codecLine = rtpMatch[1];
+          const fmtpMatch = new RegExp(`a=fmtp:${pickedPt} ([^\\r\\n]+)`, 'i').exec(parsed.body);
+          call.fmtpLine = fmtpMatch ? `a=fmtp:${pickedPt} ${fmtpMatch[1]}\r\n` : '';
+        }
       }
     }
 
@@ -593,9 +610,9 @@ class ImsTestNumberInstance {
     const callId = `ims-test-call-${randHex(8)}`;
     const fromTag = randHex(6);
     const cseqNum = this.cseq++;
-    // Offer Pixel-native PT 127 EVS/16000 first alongside iPhone-verified PT 116
-    // EVS/16000 and telephone-event (96); handleOutboundResponse locks onto the
-    // callee's chosen PT before any subsequent UPDATE.
+    // Offer EVS (PT 127/116), AMR-WB (PT 104), AMR-NB (PT 102), and telephone-event (96, 97)
+    // so callee handsets without EVS support (e.g. Xiaomi Poco F5, operator-restricted Androids)
+    // negotiate AMR-WB cleanly instead of rejecting with 488 "SDP not supported".
     const payloadType = '127';
     const codecLine = 'EVS/16000';
     const fmtpLine = 'a=fmtp:127 max-red=0; br=9.6-24.4; bw=nb-swb\r\n';
@@ -609,12 +626,19 @@ class ImsTestNumberInstance {
     const sdpOffer =
       `v=0\r\no=- ${Date.now()} 1 IN IP4 ${this.pcscfIp}\r\ns=echo-test\r\n` +
       `c=IN IP4 ${this.pcscfIp}\r\nt=0 0\r\n` +
-      `m=audio ${localRtpPort} RTP/AVP 127 116 96\r\n` +
+      `m=audio ${localRtpPort} RTP/AVP 127 116 104 102 96 97\r\n` +
       `a=rtpmap:127 EVS/16000\r\n` +
       `a=fmtp:127 max-red=0; br=9.6-24.4; bw=nb-swb\r\n` +
       `a=rtpmap:116 EVS/16000\r\n` +
       `a=fmtp:116 br=5.9-24.4; bw=nb-swb; max-red=220; mode-set=0,1,2\r\n` +
+      `a=rtpmap:104 AMR-WB/16000/1\r\n` +
+      `a=fmtp:104 mode-change-capability=2;max-red=0\r\n` +
+      `a=rtpmap:102 AMR/8000/1\r\n` +
+      `a=fmtp:102 mode-change-capability=2;max-red=0\r\n` +
       `a=rtpmap:96 telephone-event/16000\r\n` +
+      `a=fmtp:96 0-15\r\n` +
+      `a=rtpmap:97 telephone-event/8000\r\n` +
+      `a=fmtp:97 0-15\r\n` +
       `a=rtcp:${localRtpPort + 1}\r\na=ptime:20\r\n` +
       `a=curr:qos local none\r\na=des:qos mandatory local sendrecv\r\n` +
       `a=curr:qos remote none\r\na=des:qos optional remote sendrecv\r\n` +
