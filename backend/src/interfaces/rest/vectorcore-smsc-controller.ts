@@ -271,9 +271,9 @@ async function ensureCsBridge(log: (s: string) => void = () => {}): Promise<void
         match_src_iface: '', match_src_peer: '', match_dst_prefix: '',
         match_msisdn_min: '', match_msisdn_max: '',
         egress_iface: 'smpp', egress_peer: 'osmo-msc',
-        sf_policy_id: sfPolicyId, enabled: true,
+        sf_policy_id: sfPolicyId, enabled: false,
       });
-      log('  VectorCore fallback routing rule (-> smpp:osmo-msc) created');
+      log('  VectorCore fallback routing rule (-> smpp:osmo-msc) created (disabled)');
     } else {
       log('  VectorCore fallback routing rule already present');
     }
@@ -313,7 +313,13 @@ function writeState(state: VectorcoreSmscState): void {
 // default cwd ("/") and scatter files across the filesystem.
 function smscYamlCfg(imsDomain: string): string {
   const fqdn = `smsc.${imsDomain}`;
-  return `smpp:
+  // smsc.address feeds RP-OA in every MT RP-DATA. 3GPP TS 24.011 §8.2.5.1
+  // requires RP-OA to be >= 2 octets; when unset it encodes as length 0 and
+  // strict modems (Qualcomm/Xiaomi) reject the MESSAGE with 400 Bad Request.
+  return `smsc:
+  address: "7"
+
+smpp:
   server:
     address: "127.0.0.1"
     port: ${SMPP_PORT}

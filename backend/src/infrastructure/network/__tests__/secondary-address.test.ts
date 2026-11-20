@@ -119,8 +119,8 @@ describe('arpingSawReply — real output captured live on this network', () => {
   });
 });
 
-import { parseNetplanAddresses } from '../secondary-address';
-import { netplanDropIn } from '../../../domain/services/autoconfig-apply';
+import { parseNetplanAddresses, parseNetworkdAddresses } from '../secondary-address';
+import { netplanDropIn, networkdDropIn } from '../../../domain/services/autoconfig-apply';
 
 describe('parseNetplanAddresses', () => {
   it('round-trips what netplanDropIn writes', () => {
@@ -151,5 +151,24 @@ describe('parseNetplanAddresses', () => {
   it('handles a large set without missing any', () => {
     const addrs = Array.from({ length: 24 }, (_, i) => `172.16.0.${100 + i}`);
     expect(parseNetplanAddresses(netplanDropIn('eth0', addrs, 24))).toHaveLength(24);
+  });
+});
+
+describe('parseNetworkdAddresses', () => {
+  it('round-trips what networkdDropIn writes', () => {
+    const addrs = ['10.0.0.50', '10.0.0.51', '10.0.0.71'];
+    expect(parseNetworkdAddresses(networkdDropIn(addrs, 24, '10.0.0.1'))).toEqual(addrs);
+  });
+
+  it('handles custom gateway and default route syntax', () => {
+    const out = networkdDropIn(['10.0.0.50'], 24, '10.0.0.254');
+    expect(out).toContain('Gateway=10.0.0.254');
+    expect(out).toContain('GatewayOnLink=yes');
+    expect(out).toContain('Destination=0.0.0.0/0');
+    expect(parseNetworkdAddresses(out)).toEqual(['10.0.0.50']);
+  });
+
+  it('returns empty array when no Address lines present', () => {
+    expect(parseNetworkdAddresses('[Network]\n# empty\n')).toEqual([]);
   });
 });

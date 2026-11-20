@@ -149,7 +149,7 @@ import { createAsterisk2gRouter } from './interfaces/rest/asterisk-2g-controller
 import { createHnbgwRouter, loadHnbgwState } from './interfaces/rest/hnbgw-controller';
 import { createOcsRouter } from './interfaces/rest/ocs-controller';
 import { createChargingPlansRouter } from './interfaces/rest/charging-plans-controller';
-import { createBindRouter } from './interfaces/rest/bind-controller';
+import { createBindRouter, fixResolver, installDnsBootGate } from './interfaces/rest/bind-controller';
 import { createValidationRouter } from './interfaces/rest/validation-controller';
 import { createVolteValidationRouter } from './interfaces/rest/volte-validation-controller';
 import { ImsTestNumberManager, createImsTestNumberRouter } from './interfaces/rest/ims-test-number-controller';
@@ -901,6 +901,10 @@ async function main() {
   const httpServer = app.listen(config.port, () => {
     logger.info({ port: config.port }, 'HTTP server started');
   });
+
+  // Ensure DNS resolver points to local BIND9 (127.0.0.1) and early-boot network/DNS gates are installed
+  fixResolver().catch((err) => logger.warn({ err: String(err) }, 'Failed to ensure 127.0.0.1 resolver at startup'));
+  installDnsBootGate().catch((err) => logger.warn({ err: String(err) }, 'Failed to install DNS boot gate at startup'));
 
   // Fire-and-forget: build+install the MME duplicate-release-access-bearers
   // patch (see mme-dup-release-access-bearers-patch.ts for the full root

@@ -1176,7 +1176,7 @@ function defaultIfcXml(imsDomain: string, routeSmsToVectorcore?: { ip: string; p
         </SPT>
       </TriggerPoint>
       <ApplicationServer>
-        <ServerName>sip:smsc.${imsDomain}:7090</ServerName>
+        <ServerName>${routeSmsToVectorcore ? `sip:${routeSmsToVectorcore.ip}:${routeSmsToVectorcore.port}` : `sip:smsc.${imsDomain}:7090`}</ServerName>
         <DefaultHandling>0</DefaultHandling>
       </ApplicationServer>
     </InitialFilterCriteria>
@@ -1757,6 +1757,7 @@ pcscf IN A   ${p.pcscfIp}
 icscf IN A   ${p.icscfIp}
 scscf IN A   ${p.scscfIp}
 smsc  IN A   ${p.pcscfIp}
+mmsc  IN A   ${p.pcscfIp}
 hss   IN A   ${p.hssIp}
 
 ; SRV records

@@ -324,7 +324,7 @@ export async function fixResolver(): Promise<void> {
 // bitten repeatedly by edited-source-doesn't-redeploy-a-built-artifact bugs
 // (see CLAUDE.md's Kamailio patching-step gotcha and its 4 recurrences), so
 // the rev is stamped into each generated file and checked rather than assumed.
-export const DNS_BOOT_GATE_REV = 1;
+export const DNS_BOOT_GATE_REV = 2;
 
 const DNS_BOOT_GATE_SCRIPT_PATH = '/usr/local/sbin/open5gs-wait-dns.sh';
 const DNS_BOOT_GATE_UNIT_NAME   = 'open5gs-dns-ready.service';
@@ -333,6 +333,9 @@ const DNS_BOOT_GATE_REV_TAG     = `open5gs-nms dns-boot-gate rev ${DNS_BOOT_GATE
 // Generous: a genuinely broken (not merely slow) DNS costs this much boot
 // delay before the gate gives up and releases.
 const DNS_BOOT_GATE_WAIT_SECONDS = 300;
+
+const BOOT_NETWORK_SCRIPT_PATH  = '/usr/local/sbin/open5gs-boot-network.sh';
+const BOOT_NETWORK_UNIT_NAME    = 'open5gs-boot-network.service';
 
 // Non-Open5GS units that also resolve FQDNs and therefore should not start
 // before DNS answers. Kamailio's cdp module resolves a <Peer FQDN=...> via a
@@ -362,6 +365,23 @@ function dnsBootGateScript(): string {
 set -u
 TIMEOUT=\${1:-${DNS_BOOT_GATE_WAIT_SECONDS}}
 TAG=open5gs-wait-dns
+
+# Ensure /etc/resolv.conf points to local BIND9 resolver (127.0.0.1).
+# Proxmox LXC containers and cloud providers rewrite /etc/resolv.conf at boot,
+# which breaks local 3gppnetwork.org lookups and stalls NF startup.
+if ! grep -q 'nameserver 127\\.0\\.0\\.1' /etc/resolv.conf 2>/dev/null; then
+  cat << 'EOF' > /etc/resolv.conf
+nameserver 127.0.0.1
+options edns0 trust-ad
+EOF
+  logger -t "\$TAG" "Enforced /etc/resolv.conf -> 127.0.0.1 (BIND9)"
+fi
+
+# Ensure default route is present on primary interface
+if ! ip route show default | grep -q 'via'; then
+  ip route replace default via 10.0.0.1 dev eth0 onlink 2>/dev/null || true
+  logger -t "\$TAG" "Restored missing default route via 10.0.0.1 dev eth0"
+fi
 
 mapfile -t FQDNS < <(grep -rhoE '[a-z0-9._-]+\\.3gppnetwork\\.org' /etc/open5gs/*.yaml 2>/dev/null | sort -u)
 
@@ -452,6 +472,46 @@ Wants=${DNS_BOOT_GATE_UNIT_NAME}
 `;
 }
 
+function bootNetworkScript(): string {
+  return `#!/bin/bash
+set -u
+TAG="open5gs-boot-network"
+
+# 1. Enforce BIND9 local DNS in /etc/resolv.conf
+if ! grep -q 'nameserver 127\\.0\\.0\\.1' /etc/resolv.conf 2>/dev/null; then
+  cat << 'RESOLV' > /etc/resolv.conf
+nameserver 127.0.0.1
+options edns0 trust-ad
+RESOLV
+  logger -t "$TAG" "Set /etc/resolv.conf to 127.0.0.1 (BIND9)"
+fi
+
+# 2. Enforce default IPv4 route via 10.0.0.1 on eth0
+if ! ip route show default | grep -q '10\\.0\\.0\\.1'; then
+  ip route replace default via 10.0.0.1 dev eth0 onlink 2>/dev/null || true
+  logger -t "$TAG" "Ensured default route via 10.0.0.1 dev eth0"
+fi
+`;
+}
+
+function bootNetworkUnit(): string {
+  return `[Unit]
+Description=Open5GS Boot Network & DNS Setup (BIND9 + Default Route)
+DefaultDependencies=no
+After=systemd-networkd.service
+Before=network-online.target named.service open5gs-dns-ready.service
+Wants=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=${BOOT_NETWORK_SCRIPT_PATH}
+
+[Install]
+WantedBy=basic.target multi-user.target
+`;
+}
+
 // Every Open5GS NF unit, derived from the single canonical service map rather
 // than a parallel hardcoded list — so a future NF added there is covered here
 // automatically instead of being silently missed.
@@ -508,6 +568,11 @@ export async function installDnsBootGate(): Promise<{ units: string[]; skipped: 
   fs.chmodSync(`/proc/1/root${DNS_BOOT_GATE_SCRIPT_PATH}`, 0o755);
   fs.writeFileSync(`/proc/1/root/etc/systemd/system/${DNS_BOOT_GATE_UNIT_NAME}`, dnsBootGateUnit(), 'utf-8');
 
+  // Boot network service guarantees BIND9 resolver and default route on early boot
+  fs.writeFileSync(`/proc/1/root${BOOT_NETWORK_SCRIPT_PATH}`, bootNetworkScript(), { encoding: 'utf-8', mode: 0o755 });
+  fs.chmodSync(`/proc/1/root${BOOT_NETWORK_SCRIPT_PATH}`, 0o755);
+  fs.writeFileSync(`/proc/1/root/etc/systemd/system/${BOOT_NETWORK_UNIT_NAME}`, bootNetworkUnit(), 'utf-8');
+
   const units: string[] = [];
   const skipped: string[] = [];
 
@@ -529,6 +594,8 @@ export async function installDnsBootGate(): Promise<{ units: string[]; skipped: 
 
   await nsenter('systemctl', ['daemon-reload'], 30000);
   await nsenter('systemctl', ['enable', DNS_BOOT_GATE_UNIT_NAME], 20000);
+  await nsenter('systemctl', ['enable', BOOT_NETWORK_UNIT_NAME], 20000);
+  await nsenter('systemctl', ['start', BOOT_NETWORK_UNIT_NAME], 20000).catch(() => {});
   // Start it now too: RemainAfterExit keeps it active, so any NF restarted
   // later in this same session (or by a restore's own reapply steps) doesn't
   // block waiting on a gate that has never run.

@@ -13,8 +13,9 @@ import { nsenter } from './dummy-interface';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { LivenessRunner } from '../../domain/services/address-liveness';
-import { netplanDropIn, AUTOCONFIG_NETPLAN_FILE } from '../../domain/services/autoconfig-apply';
+import { netplanDropIn, networkdDropIn, AUTOCONFIG_NETPLAN_FILE, AUTOCONFIG_NETWORKD_DROPIN } from '../../domain/services/autoconfig-apply';
 
+const HOST_NETWORKD_DIR = '/proc/1/root/etc/systemd/network';
 const HOST_NETPLAN_DIR = '/proc/1/root/etc/netplan';
 const IP_RE = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
 const IFACE_RE = /^[a-zA-Z][a-zA-Z0-9_.-]{0,14}$/;
@@ -148,7 +149,7 @@ export async function bindSecondaryAddress(iface: string, ip: string, prefix: nu
 export async function unbindAddress(iface: string, ip: string, prefix: number): Promise<void> {
   assertIface(iface);
   assertIp(ip);
-  await nsenter('ip', ['addr', 'del', `${ip}/${prefix}`, 'dev', iface]).catch(() => {});
+  await nsenter('ip', ['addr', 'del', `${ip}/${prefix}`, 'dev', iface]).catch(() => { });
 }
 
 export interface NetplanPersistResult {
@@ -172,9 +173,36 @@ export async function persistNetplan(
   iface: string,
   addresses: string[],
   prefix: number,
+  gateway?: string,
 ): Promise<NetplanPersistResult> {
   assertIface(iface);
   for (const ip of addresses) assertIp(ip);
+
+  // If systemd-networkd manages this interface directly (e.g. Proxmox LXC containers
+  // with /etc/systemd/network/<iface>.network), write a systemd-networkd drop-in
+  // into <iface>.network.d/ so the base configuration (management IP, default gateway,
+  // DHCP/RA) is preserved. Writing netplan here would cause systemd-netplan-generator
+  // to emit /run/systemd/network/10-netplan-<iface>.network, which alphabetically
+  // preempts <iface>.network, wiping out the default route and management IP on boot.
+  const networkdFile = path.join(HOST_NETWORKD_DIR, `${iface}.network`);
+  if (fs.existsSync(networkdFile)) {
+    const dropInDir = path.join(HOST_NETWORKD_DIR, `${iface}.network.d`);
+    const dropInPath = path.join(dropInDir, AUTOCONFIG_NETWORKD_DROPIN);
+    fs.mkdirSync(dropInDir, { recursive: true });
+    fs.writeFileSync(dropInPath, networkdDropIn(addresses, prefix, gateway), { encoding: 'utf-8', mode: 0o644 });
+
+    // Clean up any shadowing netplan drop-in and generated run file
+    const netplanFile = path.join(HOST_NETPLAN_DIR, AUTOCONFIG_NETPLAN_FILE);
+    if (fs.existsSync(netplanFile)) {
+      try { fs.unlinkSync(netplanFile); } catch { /* best effort */ }
+    }
+    const runNetworkdFile = path.join('/proc/1/root/run/systemd/network', `10-netplan-${iface}.network`);
+    if (fs.existsSync(runNetworkdFile)) {
+      try { fs.unlinkSync(runNetworkdFile); } catch { /* best effort */ }
+    }
+    await nsenter('networkctl', ['reload']).catch(() => {});
+    return { path: dropInPath, validated: true };
+  }
 
   const target = path.join(HOST_NETPLAN_DIR, AUTOCONFIG_NETPLAN_FILE);
   fs.mkdirSync(HOST_NETPLAN_DIR, { recursive: true });
@@ -195,14 +223,32 @@ export async function persistNetplan(
 
 /** Removes the drop-in. Live addresses are untouched. */
 export function removeNetplanDropIn(): boolean {
+  let removed = false;
+  try {
+    if (fs.existsSync(HOST_NETWORKD_DIR)) {
+      const entries = fs.readdirSync(HOST_NETWORKD_DIR);
+      for (const entry of entries) {
+        if (entry.endsWith('.network.d')) {
+          const dropIn = path.join(HOST_NETWORKD_DIR, entry, AUTOCONFIG_NETWORKD_DROPIN);
+          if (fs.existsSync(dropIn)) {
+            fs.unlinkSync(dropIn);
+            removed = true;
+          }
+        }
+      }
+    }
+  } catch { /* best effort */ }
+
   const target = path.join(HOST_NETPLAN_DIR, AUTOCONFIG_NETPLAN_FILE);
-  if (!fs.existsSync(target)) return false;
-  fs.unlinkSync(target);
-  return true;
+  if (fs.existsSync(target)) {
+    fs.unlinkSync(target);
+    removed = true;
+  }
+  return removed;
 }
 
 /**
- * The addresses our own netplan drop-in claims.
+ * The addresses our own netplan or systemd-networkd drop-in claims.
  *
  * This is the second half of knowing which addresses are OURS rather than
  * somebody else's. It matters because our own addresses answer both probes —
@@ -214,13 +260,40 @@ export function removeNetplanDropIn(): boolean {
  * interrupted before the manifest is recorded.
  */
 export function readNetplanDropInAddresses(): string[] {
+  const addrs: string[] = [];
+
+  // Check systemd-networkd drop-ins
+  try {
+    if (fs.existsSync(HOST_NETWORKD_DIR)) {
+      const entries = fs.readdirSync(HOST_NETWORKD_DIR);
+      for (const entry of entries) {
+        if (entry.endsWith('.network.d')) {
+          const dropIn = path.join(HOST_NETWORKD_DIR, entry, AUTOCONFIG_NETWORKD_DROPIN);
+          if (fs.existsSync(dropIn)) {
+            addrs.push(...parseNetworkdAddresses(fs.readFileSync(dropIn, 'utf-8')));
+          }
+        }
+      }
+    }
+  } catch { /* best effort */ }
+
+  // Check netplan drop-in
   const target = path.join(HOST_NETPLAN_DIR, AUTOCONFIG_NETPLAN_FILE);
   try {
-    if (!fs.existsSync(target)) return [];
-    return parseNetplanAddresses(fs.readFileSync(target, 'utf-8'));
-  } catch {
-    return [];
-  }
+    if (fs.existsSync(target)) {
+      addrs.push(...parseNetplanAddresses(fs.readFileSync(target, 'utf-8')));
+    }
+  } catch { /* best effort */ }
+
+  return Array.from(new Set(addrs));
+}
+
+/**
+ * Pulls the addresses out of a systemd-networkd drop-in's text.
+ */
+export function parseNetworkdAddresses(raw: string): string[] {
+  return [...raw.matchAll(/^\s*Address\s*=\s*(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\/\d{1,2}\s*$/gm)]
+    .map(m => m[1]);
 }
 
 /**

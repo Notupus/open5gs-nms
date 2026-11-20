@@ -20,6 +20,7 @@ import type { AutoconfigPlan } from './autoconfig-plan';
  * DHCP and simply gains static secondary addresses.
  */
 export const AUTOCONFIG_NETPLAN_FILE = '99-nms-autoconfig.yaml';
+export const AUTOCONFIG_NETWORKD_DROPIN = '99-nms-autoconfig.conf';
 
 /** Where the manifest lives on the host (under /proc/1/root from the container). */
 export const AUTOCONFIG_MANIFEST_PATH = '/etc/open5gs-nms/autoconfig-manifest.json';
@@ -45,6 +46,25 @@ network:
     ${iface}:
       addresses:
 ${addrLines}
+`;
+}
+
+/**
+ * Systemd-networkd drop-in that persists the allocated secondary addresses
+ * and explicit default route across reboot when an interface is managed
+ * natively by systemd-networkd (e.g. Proxmox LXC containers).
+ */
+export function networkdDropIn(addresses: string[], prefix: number, gateway?: string): string {
+  const addrLines = addresses.map(a => `Address=${a}/${prefix}`).join('\n');
+  const gw = gateway || '10.0.0.1';
+  return `# Managed by open5gs-nms Auto-Configuration — do not edit manually.
+[Network]
+${addrLines}
+
+[Route]
+Gateway=${gw}
+GatewayOnLink=yes
+Destination=0.0.0.0/0
 `;
 }
 
@@ -205,19 +225,19 @@ export function addressesToBind(planned: string[], alreadyBound: string[]): stri
  * governs whether it appears in the UI at all, with that flag's own default.
  */
 export const MODULE_ENABLE_FLAGS: ReadonlyArray<{ id: string; flag: string; defaultOn: boolean }> = [
-  { id: 'ims',            flag: 'ENABLE_IMS_MODULE',             defaultOn: true  },
-  { id: 'smsOverSgs',     flag: 'ENABLE_SMS_MODULE',             defaultOn: true  },
-  { id: 'gsm',            flag: 'ENABLE_GSM_MODULE',             defaultOn: false },
-  { id: 'asterisk2g',     flag: 'ENABLE_ASTERISK_2G_MODULE',     defaultOn: false },
-  { id: 'hnbgw',          flag: 'ENABLE_HNBGW_MODULE',           defaultOn: false },
-  { id: 'vowifi',         flag: 'ENABLE_VOWIFI_MODULE',          defaultOn: true  },
-  { id: 'secgw',          flag: 'ENABLE_SECGW_MODULE',           defaultOn: false },
-  { id: 'ocs',            flag: 'ENABLE_OCS_MODULE',             defaultOn: false },
-  { id: 'mms',            flag: 'ENABLE_MMS_MODULE',             defaultOn: false },
-  { id: 'pstn',           flag: 'ENABLE_PSTN_MODULE',            defaultOn: false },
+  { id: 'ims', flag: 'ENABLE_IMS_MODULE', defaultOn: true },
+  { id: 'smsOverSgs', flag: 'ENABLE_SMS_MODULE', defaultOn: true },
+  { id: 'gsm', flag: 'ENABLE_GSM_MODULE', defaultOn: false },
+  { id: 'asterisk2g', flag: 'ENABLE_ASTERISK_2G_MODULE', defaultOn: false },
+  { id: 'hnbgw', flag: 'ENABLE_HNBGW_MODULE', defaultOn: false },
+  { id: 'vowifi', flag: 'ENABLE_VOWIFI_MODULE', defaultOn: true },
+  { id: 'secgw', flag: 'ENABLE_SECGW_MODULE', defaultOn: false },
+  { id: 'ocs', flag: 'ENABLE_OCS_MODULE', defaultOn: false },
+  { id: 'mms', flag: 'ENABLE_MMS_MODULE', defaultOn: false },
+  { id: 'pstn', flag: 'ENABLE_PSTN_MODULE', defaultOn: false },
   { id: 'vectorcoreSmsc', flag: 'ENABLE_VECTORCORE_SMSC_MODULE', defaultOn: false },
-  { id: 'twamp',          flag: 'ENABLE_TWAMP_MODULE',           defaultOn: false },
-  { id: 'syslog',         flag: 'ENABLE_SYSLOG_MODULE',          defaultOn: true  },
+  { id: 'twamp', flag: 'ENABLE_TWAMP_MODULE', defaultOn: false },
+  { id: 'syslog', flag: 'ENABLE_SYSLOG_MODULE', defaultOn: true },
 ] as const;
 
 /**
@@ -285,7 +305,7 @@ export async function awaitRunStatus<T extends RunStatusLike>(
   const now = opts.now ?? (() => Date.now());
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
   const deadline = now() + opts.timeoutMs;
-  for (;;) {
+  for (; ;) {
     const st = get();
     if (st.status === 'complete') return { ok: true, detail: summarise(st) };
     if (st.status === 'failed') return { ok: false, detail: summarise(st) || 'reported failed' };

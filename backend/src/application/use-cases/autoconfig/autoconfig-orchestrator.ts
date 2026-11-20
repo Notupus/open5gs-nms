@@ -398,7 +398,7 @@ export class AutoconfigOrchestrator {
         newlyBound.push(ip);
       }
 
-      const persisted = await persistNetplan(iface, plan.allAddresses, plan.prefix);
+      const persisted = await persistNetplan(iface, plan.allAddresses, plan.prefix, plan.gateway);
       const detail = `Bound ${toBind.length} new address(es) (${plan.allAddresses.length} total) on ${iface}; ` +
         `persisted to ${persisted.path}` + (persisted.warning ? ` — ${persisted.warning}` : '');
       this.done('bind-addresses', true, detail);

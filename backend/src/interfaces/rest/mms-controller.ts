@@ -462,7 +462,7 @@ function mmscYamlCfg(mm1PublicIp: string, mm4Hostname: string): string {
 
 mm1:
   listen: "127.0.0.1:${MM1_INTERNAL_PORT}"
-  retrieve_base_url: "http://${mm1PublicIp}:${MM1_PORT}/mms/retrieve"
+  retrieve_base_url: "http://${mm1PublicIp}:${MM1_PORT}/m/"
   max_body_size_bytes: 10485760
 
 mm3:

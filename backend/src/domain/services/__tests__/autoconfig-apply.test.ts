@@ -1,9 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import {
-  netplanDropIn, ipPlanEntriesFor, SERVICE_TO_IP_PLAN,
+  netplanDropIn, networkdDropIn, ipPlanEntriesFor, SERVICE_TO_IP_PLAN,
   buildManifest, canReuseManifest, planFromManifest, addressesToBind,
-  AUTOCONFIG_MANIFEST_REV, AutoconfigManifest, AUTOCONFIG_NETPLAN_FILE,
+  AUTOCONFIG_MANIFEST_REV, AutoconfigManifest, AUTOCONFIG_NETPLAN_FILE, AUTOCONFIG_NETWORKD_DROPIN,
 } from '../autoconfig-apply';
 import {
   buildAutoconfigContext, allocateAddresses, AUTOCONFIG_SERVICES, AutoconfigPlan,
@@ -61,6 +61,27 @@ describe('netplanDropIn', () => {
     const out = netplanDropIn('ens18', addrs, 25);
     expect(out.match(/^\s+- "/gm)).toHaveLength(11);
     expect(out).toContain('/25"');
+  });
+});
+
+describe('networkdDropIn', () => {
+  it('declares Address lines under [Network] section', () => {
+    const out = networkdDropIn(['10.0.0.50', '10.0.0.51'], 24, '10.0.0.1');
+    expect(out).toContain('[Network]');
+    expect(out).toContain('Address=10.0.0.50/24');
+    expect(out).toContain('Address=10.0.0.51/24');
+  });
+
+  it('declares Gateway and default route with GatewayOnLink under [Route]', () => {
+    const out = networkdDropIn(['10.0.0.50'], 24, '10.0.0.1');
+    expect(out).toContain('[Route]');
+    expect(out).toContain('Gateway=10.0.0.1');
+    expect(out).toContain('GatewayOnLink=yes');
+    expect(out).toContain('Destination=0.0.0.0/0');
+  });
+
+  it('targets drop-in name 99-nms-autoconfig.conf', () => {
+    expect(AUTOCONFIG_NETWORKD_DROPIN).toBe('99-nms-autoconfig.conf');
   });
 });
 
@@ -324,7 +345,7 @@ describe('unknownModuleNames', () => {
 });
 
 describe('awaitRunStatus', () => {
-  const noSleep = async () => {};
+  const noSleep = async () => { };
 
   it('returns ok on complete', async () => {
     const r = await awaitRunStatus(() => ({ status: 'complete' }), () => 'all good',
